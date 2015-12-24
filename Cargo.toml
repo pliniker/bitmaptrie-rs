@@ -1,6 +1,6 @@
 [package]
 name = "bitmaptrie"
-description = "Bitmapped vector trie (not persistent)"
+description = "Bitmapped vector trie (mutable, not persistent). Word-size path-cached indexing into essentially a sparse vector. Requires rust-nightly."
 homepage = "https://github.com/pliniker/bitmaptrie-rs"
 repository = "https://github.com/pliniker/bitmaptrie-rs"
 version = "0.9.0"
