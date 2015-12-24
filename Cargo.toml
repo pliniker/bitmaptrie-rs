@@ -1,0 +1,15 @@
+[package]
+name = "bitmaptrie"
+version = "0.9.0"
+authors = ["Peter Liniker <peter.liniker@gmail.com>"]
+
+[dev-dependencies]
+rand = "0.3"
+
+[profile.release]
+opt-level = 3
+debug = true
+
+[profile.bench]
+opt-level = 3
+debug = true
