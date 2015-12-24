@@ -10,6 +10,12 @@ Performance is good for spatially-close accesses but deteriorates for random
 spatially-sparse accesses. Performance improves significantly if compiled 
 with popcnt and lzcnt instructions.
 
+The last access path is cached to accelerate the next nearby access.
+
+Multi-path-cache methods are available for accelerating read-only accesses
+at multiple positions but the current design causes write performance to 
+degrade.
+
 ### Usage
 
 ```

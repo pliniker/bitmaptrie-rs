@@ -1,6 +1,10 @@
 [package]
 name = "bitmaptrie"
+description = "Bitmapped vector trie (not persistent)"
+homepage = "https://github.com/pliniker/bitmaptrie-rs"
+repository = "https://github.com/pliniker/bitmaptrie-rs"
 version = "0.9.0"
+license = "Apache-2.0"
 authors = ["Peter Liniker <peter.liniker@gmail.com>"]
 
 [dev-dependencies]
