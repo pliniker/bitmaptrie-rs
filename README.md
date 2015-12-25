@@ -22,13 +22,19 @@ degrade.
 
 ### Usage
 
-```
+```rust
 extern crate bitmaptrie;
 use bitmaptrie::Trie;
-  
-let mut trie: Trie<String> = Trie::new();
 
-trie.set(123usize, "testing 123".to_owned());
+fn main() {
+    let mut trie: Trie<String> = Trie::new();
+
+    trie.set(123usize, "testing 123".to_owned());
+
+    if let Some(value) = trie.get_mut(123) {
+        *value = "test pass".to_owned();
+    }
+}
 ```
 
 ### TODO
