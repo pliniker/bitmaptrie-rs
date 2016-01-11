@@ -43,8 +43,7 @@ fn main() {
 ### TODO
 
 - implement Index and IndexMut traits
-- make dual MIT/Apache licensed
 
 ### License
 
-Apache 2.0
+Dual MIT/Apache 2.0
