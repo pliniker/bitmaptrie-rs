@@ -1,19 +1,13 @@
 [package]
 name = "bitmaptrie"
 description = "Bitmapped vector trie (mutable, not persistent). Word-size path-cached indexing into essentially a sparse vector. Requires rust-nightly."
+keywords = ["trie", "vector", "sparse"]
 homepage = "https://github.com/pliniker/bitmaptrie-rs"
 repository = "https://github.com/pliniker/bitmaptrie-rs"
-version = "0.9.0"
-license = "Apache-2.0"
+version = "1.0.0"
+license = "MIT/Apache-2.0"
 authors = ["Peter Liniker <peter.liniker@gmail.com>"]
 
 [dev-dependencies]
 rand = "0.3"
 
-[profile.release]
-opt-level = 3
-debug = true
-
-[profile.bench]
-opt-level = 3
-debug = true

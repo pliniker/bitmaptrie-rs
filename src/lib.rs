@@ -34,6 +34,7 @@
 use std::ptr::null_mut;
 use std::cell::Cell;
 use std::mem::transmute;
+use std::ops::{Index, IndexMut};
 
 mod comprawvec;
 use comprawvec::CompRawVec;
@@ -714,6 +715,22 @@ impl<T> Trie<T> {
 impl<T> Drop for Trie<T> {
     fn drop(&mut self) {
         unsafe { Box::from_raw(self.cache.get()) };
+    }
+}
+
+
+impl<T> Index<usize> for Trie<T> {
+    type Output = T;
+
+    fn index(&self, index: usize) -> &T {
+        self.get(index).unwrap()
+    }
+}
+
+
+impl<T> IndexMut<usize> for Trie<T> {
+    fn index_mut(&mut self, index: usize) -> &mut T {
+        self.get_mut(index).unwrap()
     }
 }
 

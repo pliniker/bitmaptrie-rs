@@ -12,7 +12,7 @@ It essentially behaves as an unbounded (except by the word-size index) sparse
 vector.
 
 Performance is good for spatially-close accesses but deteriorates for random
-spatially-sparse accesses. Performance improves significantly if compiled 
+spatially-sparse accesses. Performance improves significantly if compiled
 with popcnt and lzcnt instructions.
 See [wiki](https://github.com/pliniker/bitmaptrie-rs/wiki/Benchmark-information)
 for more.
@@ -20,7 +20,7 @@ for more.
 The last access path is cached to accelerate the next nearby access.
 
 Multi-path-cache methods are available for accelerating read-only accesses
-at multiple positions but the current design causes write performance to 
+at multiple positions but the current design causes write performance to
 degrade.
 
 ### Usage
@@ -39,10 +39,6 @@ fn main() {
     }
 }
 ```
-
-### TODO
-
-- implement Index and IndexMut traits
 
 ### License
 
