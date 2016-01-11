@@ -1,6 +1,7 @@
 # A bitmapped vector trie for Rust
 
 [![Build Status](https://travis-ci.org/pliniker/bitmaptrie-rs.svg?branch=master)](https://travis-ci.org/pliniker/bitmaptrie-rs)
+[![Latest Version](https://img.shields.io/crates/v/bitmaptrie.svg)](https://crates.io/crates/bitmaptrie)
 
 Requires Rust-nightly due to use of low-level unstable APIs.
 
@@ -42,3 +43,8 @@ fn main() {
 ### TODO
 
 - implement Index and IndexMut traits
+- make dual MIT/Apache licensed
+
+### License
+
+Apache 2.0
