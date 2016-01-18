@@ -53,7 +53,7 @@ pub const VALID_MAX: usize = std::usize::MAX;
 
 // A bitwise left-shift that returns zero if the shift would overflow
 #[inline]
-fn default_shl(i: usize, shift: u32) -> usize {
+fn shl_or_zero(i: usize, shift: u32) -> usize {
     if shift >= std::usize::BITS as u32 {
         0
     } else {
@@ -76,7 +76,7 @@ impl<T> CompVec<T> {
     // omitting empty entries. Will panic if index is outside of valid range.
     fn compress_index(valid: usize, index: usize) -> (usize, usize) {
         let bit = 1usize << index;
-        let marker = default_shl(bit, 1);
+        let marker = shl_or_zero(bit, 1);
         let mask = marker.wrapping_sub(1);
         let compressed = (((valid | bit) & mask).count_ones() - 1) as usize;
         (bit, compressed)
@@ -179,7 +179,7 @@ impl<T> CompVec<T> {
         let index = (valid & masked_valid).trailing_zeros();
 
         if index < (std::usize::BITS as u32) {
-            let mask = default_shl(std::usize::MAX, index + 1);
+            let mask = shl_or_zero(std::usize::MAX, index + 1);
 
             Some(((mask, compressed + 1),
                   (index as usize, unsafe { self.data.get(compressed) })))

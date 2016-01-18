@@ -1,6 +1,4 @@
 #![feature(test)]
-#![feature(num_bits_bytes)]
-#![feature(wrapping)]
 
 extern crate test;
 extern crate bitmaptrie;
@@ -9,9 +7,16 @@ extern crate bitmaptrie;
 mod tests {
 
     use std;
-    use std::num::wrapping::OverflowingOps;
     use bitmaptrie::{CompVec, Trie, VALID_MAX};
 
+
+    fn shl_or_zero(value: usize, shift: u32) -> usize {
+        if shift >= (std::mem::size_of::<usize>() * 8) as u32 {
+            0
+        } else {
+            value << shift
+        }
+    }
 
     #[test]
     fn test_node_0() {
@@ -30,7 +35,7 @@ mod tests {
     fn test_node_n() {
         let mut n: CompVec<usize> = CompVec::new();
 
-        for i in 0..std::usize::BITS {
+        for i in 0..(std::mem::size_of::<usize>() * 8) {
             n.set(i, i);
 
             if let Some(x) = n.get(i) {
@@ -40,7 +45,7 @@ mod tests {
             }
         }
 
-        for i in 0..std::usize::BITS {
+        for i in 0..(std::mem::size_of::<usize>() * 8) {
             if let Some(x) = n.get(i) {
                 assert!(*x == i);
             } else {
@@ -120,7 +125,7 @@ mod tests {
         t.set(3, 42);
 
         if let Some(((mask, comp), (index, value))) = t.next(vm, 0) {
-            assert_eq!(mask, vm.overflowing_shl(4).0 as usize);
+            assert_eq!(mask, shl_or_zero(vm, 4));
             assert_eq!(comp, 1);
             assert_eq!(index, 3);
             assert_eq!(*value, 42);
@@ -128,7 +133,7 @@ mod tests {
             assert!(false);
         }
 
-        assert_eq!(t.next(vm.overflowing_shl(4).0 as usize, 1), None);
+        assert_eq!(t.next(shl_or_zero(vm, 4), 1), None);
     }
 
     #[test]

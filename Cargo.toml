@@ -4,10 +4,9 @@ description = "Bitmapped vector trie (mutable, not persistent). Word-size path-c
 keywords = ["trie", "vector", "sparse"]
 homepage = "https://github.com/pliniker/bitmaptrie-rs"
 repository = "https://github.com/pliniker/bitmaptrie-rs"
-version = "1.0.0"
+version = "1.0.1"
 license = "MIT/Apache-2.0"
 authors = ["Peter Liniker <peter.liniker@gmail.com>"]
 
 [dev-dependencies]
 rand = "0.3"
-
