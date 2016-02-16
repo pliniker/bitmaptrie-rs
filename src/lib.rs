@@ -188,8 +188,82 @@ impl<T> CompVec<T> {
         }
     }
 
+    /// Return the next Some(((masked_valid, compressed), (index, &mut value)))
+    /// or None
+    ///
+    /// `masked_valid` is the last valid bitmap with already-visited indeces
+    /// masked out, starts with std::usize::MAX for the first call.
+    /// `compressed` is the last compressed vector index, always starting
+    /// at zero for the first call.
+    #[inline]
+    pub fn next_mut(&mut self,
+                    masked_valid: usize,
+                    compressed: usize) -> Option<((usize, usize), (usize, &mut T))> {
+        let valid = self.data.valid();
+        let index = (valid & masked_valid).trailing_zeros();
+
+        if index < (std::usize::BITS as u32) {
+            let mask = shl_or_zero(std::usize::MAX, index + 1);
+
+            Some(((mask, compressed + 1),
+                  (index as usize, unsafe { self.data.get_mut(compressed) })))
+        } else {
+            None
+        }
+    }
+
     pub fn new() -> CompVec<T> {
         CompVec{data: CompRawVec::new()}
+    }
+}
+
+
+/// A type that implements Iterator for CompVec
+struct CompVecIter<'a, T: 'a> {
+    vec: &'a CompVec<T>,
+    masked_valid: usize,
+    compressed: usize
+}
+
+
+impl<'a, T> Iterator for CompVecIter<'a, T> {
+    type Item = (usize, &'a T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+
+        if let Some(((masked_valid, compressed), (index, value))) =
+            self.vec.next(self.masked_valid, self.compressed) {
+                self.masked_valid = masked_valid;
+                self.compressed = compressed;
+                Some((index, value))
+            } else {
+                None
+            }
+    }
+}
+
+
+/// A type that implements Iterator for CompVec
+struct CompVecIterMut<'a, T: 'a> {
+    vec: &'a mut CompVec<T>,
+    masked_valid: usize,
+    compressed: usize
+}
+
+
+impl<'a, T> Iterator for CompVecIterMut<'a, T> {
+    type Item = (usize, &'a mut T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+
+        if let Some(((masked_valid, compressed), (index, value))) =
+            self.vec.next_mut(self.masked_valid, self.compressed) {
+                self.masked_valid = masked_valid;
+                self.compressed = compressed;
+                Some((index, value))
+            } else {
+                None
+            }
     }
 }
 
@@ -360,6 +434,46 @@ impl<T> TrieNode<T> {
                 let value = leaf.remove(local_index as usize);
                 cache.invalidate(depth);
                 (value, leaf.is_empty())
+            }
+        }
+    }
+
+    /// Retains only the elements specified by the predicate.
+    pub fn retain_if<F>(&mut self,
+                        index: usize,
+                        depth: usize,
+                        f: F) where F: FnMut(usize, &mut T) -> bool {
+        // recurse into trie
+
+        match self {
+            &mut TrieNode::Interior(ref mut branch) => {
+                let shift = depth * BRANCHING_FACTOR_BITS;
+
+                // iter over local comprawvec entries
+                let local_index = (index >> shift) & BRANCHING_INDEX_MASK;
+
+                /*let (value, empty_child) = {
+                    let mut maybe_child = branch.get_mut(local_index as usize);
+
+                    if let Some(ref mut child) = maybe_child {
+                        //child.remove(index, depth - 1, cache)
+                    } else {
+
+                    }
+                };
+
+                if empty_child {
+                    branch.remove(local_index as usize);
+                }*/
+            },
+
+            &mut TrieNode::Exterior(ref mut leaf) => {
+                let local_index = index & BRANCHING_INDEX_MASK;
+
+                // iter over local comprawvec entries
+                /*if !f(index, leaf.get_mut(local_index)) {
+                    leaf.remove(local_index as usize);
+                }*/
             }
         }
     }
@@ -599,6 +713,11 @@ impl<T> Trie<T> {
             } else {
                 None
             }
+    }
+
+    /// ...
+    pub fn retain_if(&mut self) {
+
     }
 
     // TODO:
