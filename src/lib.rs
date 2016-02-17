@@ -1,4 +1,3 @@
-
 //! A bitmapped vector trie with node compression and a path cache.
 //!
 //! The trie does not prescribe a length or capacity beside the range of values
@@ -18,271 +17,134 @@
 //!
 //! let mut t: Trie<String> = Trie::new();
 //! t.set(123, "testing 123".to_owned());
+//!
+//! if let Some(ref value) = t.get(123) {
+//!     println!("value = {}", *value);
+//! }
 //! ```
 
 
-// so much features for doing simple things!
-#![feature(drop_in_place)]
+#![feature(alloc)]
 #![feature(associated_consts)]
 #![feature(core_intrinsics)]
-#![feature(num_bits_bytes)]
-#![feature(unique)]
+#![feature(drop_in_place)]
 #![feature(heap_api)]
-#![feature(alloc)]
+#![feature(unique)]
 
 
-use std::ptr::null_mut;
 use std::cell::Cell;
+use std::marker::PhantomData;
 use std::mem::transmute;
 use std::ops::{Index, IndexMut};
+use std::ptr::null_mut;
 
 mod comprawvec;
-use comprawvec::CompRawVec;
+mod compvec;
 
+pub use compvec::{CompVec, VALID_MAX};
+
+
+// need these to be consts so they can be plugged into array sizes
+#[cfg(target_pointer_width = "32")]
+pub const USIZE_BYTES: usize = 4;
+
+#[cfg(target_pointer_width = "64")]
+pub const USIZE_BYTES: usize = 8;
+
+pub const WORD_SIZE: usize = USIZE_BYTES * 8;
 
 // 32 or 64
-const BRANCHING_FACTOR_BITS: usize = (0b100 | (std::usize::BYTES >> 2));
+const BRANCHING_FACTOR_BITS: usize = (0b100 | (USIZE_BYTES >> 2));
 // 0x3 or or 0x7
 const BRANCHING_INDEX_MASK: usize = (1 << BRANCHING_FACTOR_BITS) - 1;
 // 6 or 11
-const BRANCHING_DEPTH: usize = std::usize::BITS / BRANCHING_FACTOR_BITS as usize + 1;
-
-/// First value to use in CompVec::next(masked__valid, ...)
-pub const VALID_MAX: usize = std::usize::MAX;
-
-
-// A bitwise left-shift that returns zero if the shift would overflow
-#[inline]
-fn shl_or_zero(i: usize, shift: u32) -> usize {
-    if shift >= std::usize::BITS as u32 {
-        0
-    } else {
-        i << shift
-    }
-}
-
-
-/// A simple sparse vector.  The `valid` word is a bitmap of which indeces
-/// have values.  The maximum size of this vector is equal to the number of
-/// bits in a word (32 or 64).
-pub struct CompVec<T> {
-    data: CompRawVec<T>
-}
-
-
-impl<T> CompVec<T> {
-
-    // Take an index in the range 0..usize::BITS and compress it down
-    // omitting empty entries. Will panic if index is outside of valid range.
-    fn compress_index(valid: usize, index: usize) -> (usize, usize) {
-        let bit = 1usize << index;
-        let marker = shl_or_zero(bit, 1);
-        let mask = marker.wrapping_sub(1);
-        let compressed = (((valid | bit) & mask).count_ones() - 1) as usize;
-        (bit, compressed)
-    }
-
-    /// Move a value into the node at the given index. Returns a reference
-    /// to the location where the value is stored.
-    pub fn set(&mut self, index: usize, value: T) -> &mut T {
-        let valid = self.data.valid();
-        let (bit, compressed) = Self::compress_index(valid, index);
-
-        if valid & bit == 0 {
-            unsafe { self.data.insert(bit, compressed, value) }
-        } else {
-            unsafe { self.data.replace(compressed, value) }
-        }
-    }
-
-    /// Return the mutable value at the given index if it exists, otherwise
-    /// return None.
-    pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
-        let valid = self.data.valid();
-        let (bit, compressed) = Self::compress_index(valid, index);
-
-        if valid & bit != 0 {
-            unsafe { Some(self.data.get_mut(compressed)) }
-        } else {
-            None
-        }
-    }
-
-    /// Return the value at the given index if it exists, otherwise return
-    /// None.
-    pub fn get(&self, index: usize) -> Option<&T> {
-        let valid = self.data.valid();
-        let (bit, compressed) = Self::compress_index(valid, index);
-
-        if valid & bit != 0 {
-            unsafe { Some(self.data.get(compressed)) }
-        } else {
-            None
-        }
-    }
-
-    /// Return the value at the given index if it exists, otherwise call the
-    /// provided function to get the default value to insert and return.
-    pub fn get_default_mut<F>(&mut self,
-                              index: usize,
-                              default: F) -> &mut T where F: Fn() -> T {
-        let valid = self.data.valid();
-        let (bit, compressed) = Self::compress_index(valid, index);
-
-        if valid & bit == 0 {
-            unsafe { self.data.insert(bit, compressed, default()) }
-        } else {
-            unsafe { self.data.get_mut(compressed) }
-        }
-    }
-
-    /// Remove an entry, returning the entry if it was present at the given
-    /// index.
-    pub fn remove(&mut self, index: usize) -> Option<T> {
-        let valid = self.data.valid();
-        let (bit, compressed) = Self::compress_index(valid, index);
-
-        if valid & bit != 0 {
-            unsafe { Some(self.data.remove(bit, compressed)) }
-        } else {
-            None
-        }
-    }
-
-    /// Number of objects stored.
-    pub fn size(&self) -> usize {
-        self.data.size()
-    }
-
-    /// Number of objects that can be stored without reallocation.
-    pub fn capacity(&self) -> usize {
-        self.data.capacity()
-    }
-
-    /// Return true if the vector is empty.
-    pub fn is_empty(&self) -> bool {
-        self.data.valid() == 0
-    }
-
-    /// Return the next Some(((masked_valid, compressed), (index, &value)))
-    /// or None
-    ///
-    /// `masked_valid` is the last valid bitmap with already-visited indeces
-    /// masked out, starts with std::usize::MAX for the first call.
-    /// `compressed` is the last compressed vector index, always starting
-    /// at zero for the first call.
-    #[inline]
-    pub fn next(&self,
-                masked_valid: usize,
-                compressed: usize) -> Option<((usize, usize), (usize, &T))> {
-        let valid = self.data.valid();
-        let index = (valid & masked_valid).trailing_zeros();
-
-        if index < (std::usize::BITS as u32) {
-            let mask = shl_or_zero(std::usize::MAX, index + 1);
-
-            Some(((mask, compressed + 1),
-                  (index as usize, unsafe { self.data.get(compressed) })))
-        } else {
-            None
-        }
-    }
-
-    /// Return the next Some(((masked_valid, compressed), (index, &mut value)))
-    /// or None
-    ///
-    /// `masked_valid` is the last valid bitmap with already-visited indeces
-    /// masked out, starts with std::usize::MAX for the first call.
-    /// `compressed` is the last compressed vector index, always starting
-    /// at zero for the first call.
-    #[inline]
-    pub fn next_mut(&mut self,
-                    masked_valid: usize,
-                    compressed: usize) -> Option<((usize, usize), (usize, &mut T))> {
-        let valid = self.data.valid();
-        let index = (valid & masked_valid).trailing_zeros();
-
-        if index < (std::usize::BITS as u32) {
-            let mask = shl_or_zero(std::usize::MAX, index + 1);
-
-            Some(((mask, compressed + 1),
-                  (index as usize, unsafe { self.data.get_mut(compressed) })))
-        } else {
-            None
-        }
-    }
-
-    pub fn new() -> CompVec<T> {
-        CompVec{data: CompRawVec::new()}
-    }
-}
-
-
-/// A type that implements Iterator for CompVec
-struct CompVecIter<'a, T: 'a> {
-    vec: &'a CompVec<T>,
-    masked_valid: usize,
-    compressed: usize
-}
-
-
-impl<'a, T> Iterator for CompVecIter<'a, T> {
-    type Item = (usize, &'a T);
-
-    fn next(&mut self) -> Option<Self::Item> {
-
-        if let Some(((masked_valid, compressed), (index, value))) =
-            self.vec.next(self.masked_valid, self.compressed) {
-                self.masked_valid = masked_valid;
-                self.compressed = compressed;
-                Some((index, value))
-            } else {
-                None
-            }
-    }
-}
-
-
-/// A type that implements Iterator for CompVec
-struct CompVecIterMut<'a, T: 'a> {
-    vec: &'a mut CompVec<T>,
-    masked_valid: usize,
-    compressed: usize
-}
-
-
-impl<'a, T> Iterator for CompVecIterMut<'a, T> {
-    type Item = (usize, &'a mut T);
-
-    fn next(&mut self) -> Option<Self::Item> {
-
-        if let Some(((masked_valid, compressed), (index, value))) =
-            self.vec.next_mut(self.masked_valid, self.compressed) {
-                self.masked_valid = masked_valid;
-                self.compressed = compressed;
-                Some((index, value))
-            } else {
-                None
-            }
-    }
-}
+const BRANCHING_DEPTH: usize = (USIZE_BYTES * 8) / BRANCHING_FACTOR_BITS as usize + 1;
 
 
 /// The identity function.
 ///
 /// Also forces the argument to move.
-fn moving<T>(x: T) -> T { x }
+fn moving<T>(x: T) -> T {
+    x
+}
 
 
 /// An interior (branch) or exterior (leaf) trie node, defined recursively.
 pub enum TrieNode<T> {
     Interior(CompVec<TrieNode<T>>),
-    Exterior(CompVec<T>)
+    Exterior(CompVec<T>),
+}
+
+
+/// An index path cache line, with the index and the node it refers to.
+struct TrieNodePtr<T> {
+    index: usize,
+    // A null pointer here indicates an invalid cache line.
+    node: *mut TrieNode<T>,
+}
+
+
+/// A cached path into a trie
+pub struct PathCache<T> {
+    // used to compare caches against each other, the newest is always valid
+    generation: usize,
+
+    // last index accessed using this cache
+    index_cache: Option<usize>,
+
+    // the path through the trie to the exterior node for the last index
+    path_cache: [TrieNodePtr<T>; BRANCHING_DEPTH],
+}
+
+
+/// Path-cached bitmap trie.
+///
+/// Caveats for *_with_cache() functions:
+///  - no way to prevent a PathCache being used with the wrong MultiCacheTrie
+///    instance: safety fail
+///  - structure-modifying writes are more expensive due to cache invalidation
+pub struct Trie<T> {
+    root: TrieNode<T>,
+    cache: Cell<*mut PathCache<T>>,
+}
+
+
+/// Iterator over Trie
+pub struct Iter<'a, T: 'a> {
+    // current path down to the exterior node
+    nodes: [*const TrieNode<T>; BRANCHING_DEPTH],
+    // position in each node of the child node (masked_valid, compressed_index)
+    points: [(usize, usize); BRANCHING_DEPTH],
+
+    // current position in the current path
+    depth: usize,
+    current: &'a TrieNode<T>,
+
+    // current full index pieced together from all current nodes
+    index: usize,
+}
+
+
+/// Iterator over Trie
+pub struct IterMut<'a, T: 'a> {
+    // current path down to the exterior node
+    nodes: [*mut TrieNode<T>; BRANCHING_DEPTH],
+    // position in each node of the child node (masked_valid, compressed_index)
+    points: [(usize, usize); BRANCHING_DEPTH],
+
+    // current position in the current path
+    depth: usize,
+    current: *mut TrieNode<T>,
+
+    // current full index pieced together from all current nodes
+    index: usize,
+
+    // because we aren't borrowing a &mut in this struct
+    _lifetime: PhantomData<&'a T>,
 }
 
 
 impl<T> TrieNode<T> {
-
     fn new_branch() -> TrieNode<T> {
         TrieNode::Interior(CompVec::new())
     }
@@ -291,11 +153,7 @@ impl<T> TrieNode<T> {
         TrieNode::Exterior(CompVec::new())
     }
 
-    fn set(&mut self,
-           index: usize,
-           value: T,
-           depth: usize,
-           cache: &mut PathCache<T>) -> &mut T {
+    fn set(&mut self, index: usize, value: T, depth: usize, cache: &mut PathCache<T>) -> &mut T {
 
         let mut depth = depth;
         let mut shift = depth * BRANCHING_FACTOR_BITS;
@@ -306,15 +164,13 @@ impl<T> TrieNode<T> {
 
             match moving(current) {
                 &mut TrieNode::Interior(ref mut branch) => {
-                    let child = branch.get_default_mut(
-                        local_index,
-                        || {
-                            if depth > 1 {
-                                Self::new_branch()
-                            } else {
-                                Self::new_leaf()
-                            }
-                        });
+                    let child = branch.get_default_mut(local_index, || {
+                        if depth > 1 {
+                            Self::new_branch()
+                        } else {
+                            Self::new_leaf()
+                        }
+                    });
 
                     depth -= 1;
                     shift -= BRANCHING_FACTOR_BITS;
@@ -322,7 +178,7 @@ impl<T> TrieNode<T> {
                     cache.set(depth, local_index, child);
 
                     current = child;
-                },
+                }
 
                 &mut TrieNode::Exterior(ref mut leaf) => {
                     return leaf.set(local_index, value);
@@ -331,10 +187,7 @@ impl<T> TrieNode<T> {
         }
     }
 
-    fn get_mut(&mut self,
-               index: usize,
-               depth: usize,
-               cache: &mut PathCache<T>) -> Option<&mut T> {
+    fn get_mut(&mut self, index: usize, depth: usize, cache: &mut PathCache<T>) -> Option<&mut T> {
 
         let mut depth = depth;
         let mut shift = depth * BRANCHING_FACTOR_BITS;
@@ -345,7 +198,6 @@ impl<T> TrieNode<T> {
 
             match moving(current) {
                 &mut TrieNode::Interior(ref mut branch) => {
-
                     if let Some(child) = branch.get_mut(local_index as usize) {
                         depth -= 1;
                         shift -= BRANCHING_FACTOR_BITS;
@@ -354,21 +206,16 @@ impl<T> TrieNode<T> {
 
                         current = child;
                     } else {
-                        return None
+                        return None;
                     }
-                },
-
-                &mut TrieNode::Exterior(ref mut leaf) => {
-                    return leaf.get_mut(local_index as usize)
                 }
+
+                &mut TrieNode::Exterior(ref mut leaf) => return leaf.get_mut(local_index as usize),
             }
         }
     }
 
-    fn get(&self,
-           index: usize,
-           depth: usize,
-           cache: &mut PathCache<T>) -> Option<&T> {
+    fn get(&self, index: usize, depth: usize, cache: &mut PathCache<T>) -> Option<&T> {
 
         let mut depth = depth;
         let mut shift = depth * BRANCHING_FACTOR_BITS;
@@ -379,7 +226,6 @@ impl<T> TrieNode<T> {
 
             match moving(current) {
                 &TrieNode::Interior(ref branch) => {
-
                     if let Some(child) = branch.get(local_index as usize) {
                         depth -= 1;
                         shift -= BRANCHING_FACTOR_BITS;
@@ -388,13 +234,11 @@ impl<T> TrieNode<T> {
 
                         current = child;
                     } else {
-                        return None
+                        return None;
                     }
-                },
-
-                &TrieNode::Exterior(ref leaf) => {
-                    return leaf.get(local_index as usize)
                 }
+
+                &TrieNode::Exterior(ref leaf) => return leaf.get(local_index as usize),
             }
         }
     }
@@ -403,7 +247,8 @@ impl<T> TrieNode<T> {
     fn remove(&mut self,
               index: usize,
               depth: usize,
-              cache: &mut PathCache<T>) -> (Option<T>, bool) {
+              cache: &mut PathCache<T>)
+              -> (Option<T>, bool) {
         // must be recursive in order to delete empty leaves and branches
 
         match self {
@@ -427,7 +272,7 @@ impl<T> TrieNode<T> {
                 }
 
                 (value, branch.is_empty())
-            },
+            }
 
             &mut TrieNode::Exterior(ref mut leaf) => {
                 let local_index = index & BRANCHING_INDEX_MASK;
@@ -439,59 +284,51 @@ impl<T> TrieNode<T> {
     }
 
     /// Retains only the elements specified by the predicate.
-    pub fn retain_if<F>(&mut self,
-                        index: usize,
-                        depth: usize,
-                        f: F) where F: FnMut(usize, &mut T) -> bool {
-        // recurse into trie
-
-        match self {
-            &mut TrieNode::Interior(ref mut branch) => {
-                let shift = depth * BRANCHING_FACTOR_BITS;
-
-                // iter over local comprawvec entries
-                let local_index = (index >> shift) & BRANCHING_INDEX_MASK;
-
-                /*let (value, empty_child) = {
-                    let mut maybe_child = branch.get_mut(local_index as usize);
-
-                    if let Some(ref mut child) = maybe_child {
-                        //child.remove(index, depth - 1, cache)
-                    } else {
-
-                    }
-                };
-
-                if empty_child {
-                    branch.remove(local_index as usize);
-                }*/
-            },
-
-            &mut TrieNode::Exterior(ref mut leaf) => {
-                let local_index = index & BRANCHING_INDEX_MASK;
-
-                // iter over local comprawvec entries
-                /*if !f(index, leaf.get_mut(local_index)) {
-                    leaf.remove(local_index as usize);
-                }*/
-            }
-        }
+    pub fn retain_if<F>(&mut self, _index: usize, _depth: usize, _f: F)
+        where F: FnMut(usize, &mut T) -> bool {
+    // recurse into trie
+    //
+    // match self {
+    // &mut TrieNode::Interior(ref mut branch) => {
+    // let shift = depth * BRANCHING_FACTOR_BITS;
+    //
+    // iter over local comprawvec entries
+    // let local_index = (index >> shift) & BRANCHING_INDEX_MASK;
+    //
+    // let (value, empty_child) = {
+    // let mut maybe_child = branch.get_mut(local_index as usize);
+    //
+    // if let Some(ref mut child) = maybe_child {
+    // child.remove(index, depth - 1, cache)
+    // } else {
+    //
+    // }
+    // };
+    //
+    // if empty_child {
+    // branch.remove(local_index as usize);
+    // }*/
+    // },
+    //
+    // &mut TrieNode::Exterior(ref mut leaf) => {
+    // let local_index = index & BRANCHING_INDEX_MASK;
+    //
+    // iter over local comprawvec entries
+    // if !f(index, leaf.get_mut(local_index)) {
+    // leaf.remove(local_index as usize);
+    // }*/
+    // }
+    // }
     }
-}
-
-
-/// An index path cache line, with the index and the node it refers to.
-struct TrieNodePtr<T> {
-    index: usize,
-    /// A null pointer here indicates an invalid cache line.
-    node: *mut TrieNode<T>
 }
 
 
 impl<T> Clone for TrieNodePtr<T> {
     fn clone(&self) -> TrieNodePtr<T> {
-        TrieNodePtr{index: self.index,
-                    node: self.node}
+        TrieNodePtr {
+            index: self.index,
+            node: self.node,
+        }
     }
 }
 
@@ -501,13 +338,15 @@ impl<T> Copy for TrieNodePtr<T> {}
 
 impl<T> Default for TrieNodePtr<T> {
     fn default() -> TrieNodePtr<T> {
-        TrieNodePtr{index: 0, node: null_mut()}
+        TrieNodePtr {
+            index: 0,
+            node: null_mut(),
+        }
     }
 }
 
 
 impl<T> TrieNodePtr<T> {
-
     fn set(&mut self, index: usize, node: &TrieNode<T>) {
         self.index = index;
         self.node = unsafe { transmute(node) };
@@ -531,20 +370,13 @@ impl<T> TrieNodePtr<T> {
 }
 
 
-/// A cached path into a trie
-pub struct PathCache<T> {
-    generation: usize,
-    index_cache: Option<usize>,
-    path_cache: [TrieNodePtr<T>; BRANCHING_DEPTH],
-}
-
-
 impl<T> PathCache<T> {
-
     fn new() -> PathCache<T> {
-        PathCache{generation: 0,
-                  index_cache: None,
-                  path_cache: [TrieNodePtr::<T>::default(); BRANCHING_DEPTH]}
+        PathCache {
+            generation: 0,
+            index_cache: None,
+            path_cache: [TrieNodePtr::<T>::default(); BRANCHING_DEPTH],
+        }
     }
 
     /// Calculate where to start looking in the cache
@@ -556,7 +388,7 @@ impl<T> PathCache<T> {
         // to predict where the least significant cache-hit might be
         if let Some(last_index) = self.index_cache {
             // the msb bits that are covered by self.root, no cache lookup
-            let msb_ignore = std::usize::BITS % BRANCHING_FACTOR_BITS;
+            let msb_ignore = WORD_SIZE % BRANCHING_FACTOR_BITS;
 
             let diff = (index ^ last_index) << msb_ignore;
             let similarity = diff.leading_zeros();
@@ -626,15 +458,16 @@ impl<T> PathCache<T> {
     fn in_sync_to(&self, other: &PathCache<T>) -> bool {
         self.generation == other.generation
     }
-
 }
 
 
 impl<T> Clone for PathCache<T> {
     fn clone(&self) -> PathCache<T> {
-        PathCache{index_cache: self.index_cache,
-                  generation: self.generation,
-                  path_cache: self.path_cache.clone()}
+        PathCache {
+            index_cache: self.index_cache,
+            generation: self.generation,
+            path_cache: self.path_cache.clone(),
+        }
     }
 }
 
@@ -642,20 +475,7 @@ impl<T> Clone for PathCache<T> {
 impl<T> Copy for PathCache<T> {}
 
 
-/// Path-cached bitmap trie.
-///
-/// Caveats for *_with_cache() functions:
-///  - no way to prevent a PathCache being used with the wrong MultiCacheTrie
-///    instance: safety fail
-///  - structure-modifying writes are more expensive due to cache invalidation
-pub struct Trie<T> {
-    root: TrieNode<T>,
-    cache: Cell<*mut PathCache<T>>,
-}
-
-
 impl<T> Trie<T> {
-
     /// Instantiate a new Trie, indexed by a usize integer and storing values
     /// of type T.
     pub fn new() -> Trie<T> {
@@ -663,10 +483,13 @@ impl<T> Trie<T> {
 
         let cache = Box::into_raw(Box::new(PathCache::new()));
 
-        Trie{root: root, cache: Cell::new(cache)}
+        Trie {
+            root: root,
+            cache: Cell::new(cache),
+        }
     }
 
-    /// Set an entry to a value.
+    /// Set an entry to a value, moving the new value into the trie.
     pub fn set(&mut self, index: usize, value: T) -> &mut T {
         let cache = unsafe { &mut *self.cache.get() };
 
@@ -677,7 +500,7 @@ impl<T> Trie<T> {
         }
     }
 
-    /// Retrieve a value.
+    /// Retrieve a mutable reference to the value at the given index.
     pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
         let cache = unsafe { &mut *self.cache.get() };
 
@@ -688,7 +511,7 @@ impl<T> Trie<T> {
         }
     }
 
-    /// Retrieve a value.
+    /// Retrieve a reference to the value at the given index.
     pub fn get(&self, index: usize) -> Option<&T> {
         let cache = unsafe { &mut *self.cache.get() };
 
@@ -703,21 +526,15 @@ impl<T> Trie<T> {
     pub fn remove(&mut self, index: usize) -> Option<T> {
         let cache = unsafe { &mut *self.cache.get() };
 
-        if let (Some(value), _) =
-            if let Some((start_node, depth)) = cache.get_node_mut(index) {
-                unsafe { &mut *start_node }.remove(index, depth as usize, cache)
-            } else {
-                self.root.remove(index, BRANCHING_DEPTH - 1, cache)
-            } {
-                Some(value)
-            } else {
-                None
-            }
-    }
-
-    /// ...
-    pub fn retain_if(&mut self) {
-
+        if let (Some(value), _) = if let Some((start_node, depth)) = cache.get_node_mut(index) {
+            unsafe { &mut *start_node }.remove(index, depth as usize, cache)
+        } else {
+            self.root.remove(index, BRANCHING_DEPTH - 1, cache)
+        } {
+            Some(value)
+        } else {
+            None
+        }
     }
 
     // TODO:
@@ -731,10 +548,7 @@ impl<T> Trie<T> {
     /// Set an entry to a value, accelerating access with the given cache,
     /// updating the cache with the new path. This function causes a new
     /// generation since it can possibly cause memory to move around.
-    pub fn set_with_cache(&mut self,
-                          cache: &mut PathCache<T>,
-                          index: usize,
-                          value: T) -> &mut T {
+    pub fn set_with_cache(&mut self, cache: &mut PathCache<T>, index: usize, value: T) -> &mut T {
         let gen_cache = unsafe { &mut *self.cache.get() };
 
         if !cache.in_sync_to(gen_cache) {
@@ -755,9 +569,7 @@ impl<T> Trie<T> {
 
     /// Retrieve a value, accelerating access with the given cache, updating
     /// the cache with the new path.
-    pub fn get_mut_with_cache(&mut self,
-                              cache: &mut PathCache<T>,
-                              index: usize) -> Option<&mut T> {
+    pub fn get_mut_with_cache(&mut self, cache: &mut PathCache<T>, index: usize) -> Option<&mut T> {
         let gen_cache = unsafe { &mut *self.cache.get() };
 
         if !cache.in_sync_to(gen_cache) {
@@ -773,9 +585,7 @@ impl<T> Trie<T> {
 
     /// Retrieve a value, accelerating access with the given cache, updating
     /// the cache with the new path.
-    pub fn get_with_cache(&self,
-                          cache: &mut PathCache<T>,
-                          index: usize) -> Option<&T> {
+    pub fn get_with_cache(&self, cache: &mut PathCache<T>, index: usize) -> Option<&T> {
 
         let gen_cache = unsafe { &mut *self.cache.get() };
 
@@ -793,25 +603,23 @@ impl<T> Trie<T> {
     /// Remove an entry, accelerating access with the given cache, updating
     /// the cache with the new path. This function causes a new generation
     /// since it can cause memory to move around.
-    pub fn remove_with_cache(&mut self,
-                             cache: &mut PathCache<T>,
-                             index: usize) -> Option<T> {
+    pub fn remove_with_cache(&mut self, cache: &mut PathCache<T>, index: usize) -> Option<T> {
         let gen_cache = unsafe { &mut *self.cache.get() };
 
         if !cache.in_sync_to(gen_cache) {
             *cache = *gen_cache;
         }
 
-        let rv = if let (Some(value), _) =
-            if let Some((start_node, depth)) = cache.get_node_mut(index) {
-                unsafe { &mut *start_node }.remove(index, depth as usize, cache)
-            } else {
-                self.root.remove(index, BRANCHING_DEPTH - 1, cache)
-            } {
-                Some(value)
-            } else {
-                None
-            };
+        let rv = if let (Some(value), _) = if let Some((start_node, depth)) =
+                                                  cache.get_node_mut(index) {
+            unsafe { &mut *start_node }.remove(index, depth as usize, cache)
+        } else {
+            self.root.remove(index, BRANCHING_DEPTH - 1, cache)
+        } {
+            Some(value)
+        } else {
+            None
+        };
 
         cache.new_generation();
         *gen_cache = *cache;
@@ -854,23 +662,15 @@ impl<T> IndexMut<usize> for Trie<T> {
 }
 
 
-/// Iterator over Trie
-pub struct Iter<'a, T: 'a> {
-    nodes: [*const TrieNode<T>; BRANCHING_DEPTH],
-    points: [(usize, usize); BRANCHING_DEPTH],
-    depth: usize,
-    current: &'a TrieNode<T>,
-    index: usize,
-}
-
-
 impl<'a, T> Iter<'a, T> {
     pub fn new(root: &TrieNode<T>) -> Iter<T> {
-        Iter{nodes: [null_mut(); BRANCHING_DEPTH],
-             points: [(VALID_MAX, 0); BRANCHING_DEPTH],
-             depth: BRANCHING_DEPTH - 1,
-             current: root,
-             index: 0}
+        Iter {
+            nodes: [null_mut(); BRANCHING_DEPTH],
+            points: [(VALID_MAX, 0); BRANCHING_DEPTH],
+            depth: BRANCHING_DEPTH - 1,
+            current: root,
+            index: 0,
+        }
     }
 }
 
@@ -878,6 +678,9 @@ impl<'a, T> Iter<'a, T> {
 impl<'a, T> Iterator for Iter<'a, T> {
     type Item = (usize, &'a T);
 
+    // I'm not too happy with this state machine design. It surely is possible to use generics
+    // a bit more to modularize this code but I keep hitting lifetime issues.
+    // So for now, raw pointers.
     fn next(&mut self) -> Option<(usize, &'a T)> {
         loop {
             match self.current {
@@ -885,51 +688,125 @@ impl<'a, T> Iterator for Iter<'a, T> {
                 &TrieNode::Interior(ref node) => {
                     let point = self.points[self.depth];
 
-                    if let Some(((mask, comp), (index_part, child)))
-                        = node.next(point.0, point.1) {
+                    if let Some(((mask, comp), (index_part, child))) = node.next(point.0, point.1) {
 
-                            self.points[self.depth] = (mask, comp);
+                        self.points[self.depth] = (mask, comp);
 
-                            let shift = self.depth * BRANCHING_FACTOR_BITS;
-                            let index_mask = !(BRANCHING_INDEX_MASK << shift);
+                        let shift = self.depth * BRANCHING_FACTOR_BITS;
+                        let index_mask = !(BRANCHING_INDEX_MASK << shift);
 
-                            self.index &= index_mask;
-                            self.index |= index_part << shift;
+                        self.index &= index_mask;
+                        self.index |= index_part << shift;
 
-                            self.nodes[self.depth] = self.current;
-                            self.current = child;
-                            self.depth -= 1;
+                        self.nodes[self.depth] = self.current;
+                        self.current = child;
+                        self.depth -= 1;
 
-                        } else {
-                            self.points[self.depth] = (VALID_MAX, 0usize);
+                    } else {
+                        self.points[self.depth] = (VALID_MAX, 0usize);
 
-                            self.depth += 1;
-                            if self.depth == BRANCHING_DEPTH {
-                                return None;
-                            }
-
-                            self.current = unsafe { &*self.nodes[self.depth] };
+                        self.depth += 1;
+                        if self.depth == BRANCHING_DEPTH {
+                            return None;
                         }
-                },
+
+                        self.current = unsafe { &*self.nodes[self.depth] };
+                    }
+                }
 
                 &TrieNode::Exterior(ref node) => {
                     let point = self.points[0];
 
-                    if let Some(((mask, comp), (index_part, value)))
-                        = node.next(point.0, point.1) {
+                    if let Some(((mask, comp), (index_part, value))) = node.next(point.0, point.1) {
 
-                            self.points[0] = (mask, comp);
+                        self.points[0] = (mask, comp);
 
-                            let index_mask = !BRANCHING_INDEX_MASK;
-                            self.index = self.index & index_mask | index_part;
+                        let index_mask = !BRANCHING_INDEX_MASK;
+                        self.index = self.index & index_mask | index_part;
 
-                            return Some((self.index, value));
+                        return Some((self.index, value));
 
-                        } else {
-                            self.points[0] = (VALID_MAX, 0usize);
-                            self.depth = 1;
-                            self.current = unsafe { &*self.nodes[1] };
+                    } else {
+                        self.points[0] = (VALID_MAX, 0usize);
+                        self.depth = 1;
+                        self.current = unsafe { &*self.nodes[1] };
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+impl<'a, T> IterMut<'a, T> {
+    pub fn new(root: &mut TrieNode<T>) -> IterMut<T> {
+        IterMut {
+            nodes: [null_mut(); BRANCHING_DEPTH],
+            points: [(VALID_MAX, 0); BRANCHING_DEPTH],
+            depth: BRANCHING_DEPTH - 1,
+            current: root,
+            index: 0,
+            _lifetime: PhantomData,
+        }
+    }
+}
+
+
+impl<'a, T> Iterator for IterMut<'a, T> {
+    type Item = (usize, &'a mut T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match unsafe { &mut *self.current } {
+
+                &mut TrieNode::Interior(ref mut node) => {
+                    let point = self.points[self.depth];
+
+                    if let Some(((mask, comp), (index_part, child))) = node.next_mut(point.0,
+                                                                                     point.1) {
+
+                        self.points[self.depth] = (mask, comp);
+
+                        let shift = self.depth * BRANCHING_FACTOR_BITS;
+                        let index_mask = !(BRANCHING_INDEX_MASK << shift);
+
+                        self.index &= index_mask;
+                        self.index |= index_part << shift;
+
+                        self.nodes[self.depth] = self.current;
+                        self.current = child;
+                        self.depth -= 1;
+
+                    } else {
+                        self.points[self.depth] = (VALID_MAX, 0usize);
+
+                        self.depth += 1;
+                        if self.depth == BRANCHING_DEPTH {
+                            return None;
                         }
+
+                        self.current = unsafe { &mut *self.nodes[self.depth] };
+                    }
+                }
+
+                &mut TrieNode::Exterior(ref mut node) => {
+                    let point = self.points[0];
+
+                    if let Some(((mask, comp), (index_part, value))) = node.next_mut(point.0,
+                                                                                     point.1) {
+
+                        self.points[0] = (mask, comp);
+
+                        let index_mask = !BRANCHING_INDEX_MASK;
+                        self.index = self.index & index_mask | index_part;
+
+                        return Some((self.index, value));
+
+                    } else {
+                        self.points[0] = (VALID_MAX, 0usize);
+                        self.depth = 1;
+                        self.current = unsafe { &mut *self.nodes[1] };
+                    }
                 }
             }
         }

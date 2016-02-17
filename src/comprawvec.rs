@@ -1,13 +1,10 @@
-
-//! Unsafe code in here.
-//!
-//! This module borrows patterns from Vec and RawVec.
+//! This module borrows patterns from RawVec to build a raw compressed array.
 
 
+use std::cmp::max;
+use std::intrinsics::{needs_drop, drop_in_place, abort};
 use std::mem::{size_of, align_of};
 use std::ptr::{copy, read, write, Unique};
-use std::cmp::{max};
-use std::intrinsics::{needs_drop, drop_in_place, abort};
 
 extern crate alloc;
 use self::alloc::heap::{allocate, reallocate, deallocate};
@@ -19,16 +16,20 @@ const MIN_CAPACITY: usize = 4;
 
 /// A compressed vector of objects where the first element of the array is a
 /// bitmap of which indeces are valid. This is an unsafe data structure as it
-/// is not bounds-checked. Maximum capacity is std::usize::BITS.
+/// is not bounds-checked. Maximum capacity is the word size
 pub struct CompRawVec<T> {
+    // bitmap of which indeces have values
     valid: usize,
+
+    // a whole word for the tiny capacity: is there a more efficient encoding?
     capacity: usize,
+
+    // pointer to the array of length `capacity`
     ptrs: Unique<T>,
 }
 
 
 impl<T> CompRawVec<T> {
-
     fn oom() -> ! {
         unsafe { abort() }
     }
@@ -39,7 +40,9 @@ impl<T> CompRawVec<T> {
             let size = capacity * size_of::<T>();
 
             let array = allocate(size, align_of::<T>());
-            if array.is_null() { Self::oom(); }
+            if array.is_null() {
+                Self::oom();
+            }
 
             Unique::new(array as *mut T)
         }
@@ -47,9 +50,7 @@ impl<T> CompRawVec<T> {
 
     /// Resize an allocated block of objects
     #[inline]
-    fn reallocate(data: &mut Unique<T>,
-                  old_capacity: usize,
-                  new_capacity: usize) {
+    fn reallocate(data: &mut Unique<T>, old_capacity: usize, new_capacity: usize) {
         let old_size = old_capacity * size_of::<T>();
         let new_size = new_capacity * size_of::<T>();
 
@@ -58,7 +59,9 @@ impl<T> CompRawVec<T> {
                                    old_size,
                                    new_size,
                                    align_of::<T>());
-            if array.is_null() { Self::oom(); }
+            if array.is_null() {
+                Self::oom();
+            }
 
             *data = Unique::new(array as *mut T);
         }
@@ -68,9 +71,7 @@ impl<T> CompRawVec<T> {
     fn deallocate(data: &mut Unique<T>, capacity: usize) {
         unsafe {
             let size = capacity * size_of::<T>();
-            deallocate(data.get_mut() as *mut T as *mut u8,
-                       size,
-                       align_of::<T>());
+            deallocate(data.get_mut() as *mut T as *mut u8, size, align_of::<T>());
         }
     }
 
@@ -92,10 +93,7 @@ impl<T> CompRawVec<T> {
     /// values to the right.
     /// Does not bounds-check index.
     #[inline]
-    pub unsafe fn insert(&mut self,
-                         valid_bit: usize,
-                         index: usize,
-                         value: T) -> &mut T {
+    pub unsafe fn insert(&mut self, valid_bit: usize, index: usize, value: T) -> &mut T {
 
         let size = self.size();
         let capacity = self.capacity;
@@ -104,9 +102,7 @@ impl<T> CompRawVec<T> {
         if size == capacity {
             let new_capacity = capacity * 2;
 
-            Self::reallocate(&mut self.ptrs,
-                             capacity,
-                             new_capacity);
+            Self::reallocate(&mut self.ptrs, capacity, new_capacity);
 
             self.capacity = new_capacity;
         }
@@ -152,9 +148,7 @@ impl<T> CompRawVec<T> {
         if ((size - 1) * 2 == capacity) && (capacity > MIN_CAPACITY) {
             let new_capacity = max(capacity >> 1, MIN_CAPACITY);
 
-            Self::reallocate(&mut self.ptrs,
-                             capacity,
-                             new_capacity);
+            Self::reallocate(&mut self.ptrs, capacity, new_capacity);
 
             self.capacity = new_capacity;
         }
@@ -179,15 +173,16 @@ impl<T> CompRawVec<T> {
 
     /// Instantiate a new CompRawVec with NODE_CAPACITY_INC capacity.
     pub fn new() -> CompRawVec<T> {
-        CompRawVec{valid: 0,
-                   capacity: MIN_CAPACITY,
-                   ptrs: Self::allocate(MIN_CAPACITY)}
+        CompRawVec {
+            valid: 0,
+            capacity: MIN_CAPACITY,
+            ptrs: Self::allocate(MIN_CAPACITY),
+        }
     }
 }
 
 
 impl<T> Drop for CompRawVec<T> {
-
     fn drop(&mut self) {
         unsafe {
             if needs_drop::<T>() {
