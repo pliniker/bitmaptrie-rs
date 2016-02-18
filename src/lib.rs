@@ -59,9 +59,9 @@ pub const USIZE_BYTES: usize = 8;
 
 pub const WORD_SIZE: usize = USIZE_BYTES * 8;
 
-// 32 or 64
+// number of bits represented by each trie node: 5 or 6
 const BRANCHING_FACTOR_BITS: usize = (0b100 | (USIZE_BYTES >> 2));
-// 0x3 or or 0x7
+// bit mask for previous: 31 or or 63
 const BRANCHING_INDEX_MASK: usize = (1 << BRANCHING_FACTOR_BITS) - 1;
 // 6 or 11
 const BRANCHING_DEPTH: usize = (USIZE_BYTES * 8) / BRANCHING_FACTOR_BITS as usize + 1;
@@ -77,14 +77,19 @@ fn moving<T>(x: T) -> T {
 
 /// An interior (branch) or exterior (leaf) trie node, defined recursively.
 pub enum TrieNode<T> {
+    // node that contains further nodes
     Interior(CompVec<TrieNode<T>>),
+
+    // node that contains the T-typed values
     Exterior(CompVec<T>),
 }
 
 
 /// An index path cache line, with the index and the node it refers to.
 struct TrieNodePtr<T> {
+    // the node-local index for this node pointer
     index: usize,
+
     // A null pointer here indicates an invalid cache line.
     node: *mut TrieNode<T>,
 }
@@ -111,6 +116,8 @@ pub struct PathCache<T> {
 ///  - structure-modifying writes are more expensive due to cache invalidation
 pub struct Trie<T> {
     root: TrieNode<T>,
+
+    // this pattern of putting a raw pointer in a Cell probably isn't the right abstraction
     cache: Cell<*mut PathCache<T>>,
 }
 
@@ -146,7 +153,7 @@ pub struct IterMut<'a, T: 'a> {
     index: usize,
 
     // because we aren't borrowing a &mut in this struct
-    _lifetime: PhantomData<&'a T>,
+    _lifetime: PhantomData<&'a mut T>,
 }
 
 
@@ -293,7 +300,7 @@ impl<T> TrieNode<T> {
     pub fn retain_if<F>(&mut self, index: usize, depth: usize, f: &F) -> bool
         where F: Fn(usize, &mut T) -> bool
     {
-        // recurse into trie
+        // must be recursive in order to delete empty leaves and branches
 
         match self {
             &mut TrieNode::Interior(ref mut int_vec) => {
@@ -305,7 +312,7 @@ impl<T> TrieNode<T> {
                 // for each child node...
                 loop {
                     let (do_remove, local_index, next_masked_valid, next_compressed) = {
-                        // look up next child mutably inside this scope
+                        // look up child mutably inside this scope
                         if let Some(((v, c), (i, ref mut child))) = int_vec.next_mut(masked_valid,
                                                                                      compressed) {
 
@@ -700,7 +707,7 @@ impl<T> Trie<T> {
         Iter::new(&self.root)
     }
 
-    /// Create an iterator over immutable data
+    /// Create an iterator over mutable data
     pub fn iter_mut(&mut self) -> IterMut<T> {
         IterMut::new(&mut self.root)
     }
@@ -747,8 +754,7 @@ impl<'a, T> Iterator for Iter<'a, T> {
     type Item = (usize, &'a T);
 
     // I'm not too happy with this state machine design. It surely is possible to use generics
-    // a bit more to modularize this code but I keep hitting lifetime issues.
-    // So for now, raw pointers.
+    // a bit more to modularize this code.
     fn next(&mut self) -> Option<(usize, &'a T)> {
         loop {
             match self.current {
