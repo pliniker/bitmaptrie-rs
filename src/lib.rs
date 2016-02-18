@@ -699,6 +699,11 @@ impl<T> Trie<T> {
     pub fn iter(&self) -> Iter<T> {
         Iter::new(&self.root)
     }
+
+    /// Create an iterator over immutable data
+    pub fn iter_mut(&mut self) -> IterMut<T> {
+        IterMut::new(&mut self.root)
+    }
 }
 
 
