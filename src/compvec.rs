@@ -3,8 +3,8 @@
 
 use std;
 
-use ::WORD_SIZE;
 use comprawvec::CompRawVec;
+use WORD_SIZE;
 
 
 
@@ -202,8 +202,9 @@ impl<'a, T> Iterator for Iter<'a, T> {
 
     fn next(&mut self) -> Option<Self::Item> {
 
-        if let Some(((masked_valid, compressed),
-                     (index, value))) = self.vec.next(self.masked_valid, self.compressed) {
+        if let Some(((masked_valid, compressed), (index, value))) = self.vec
+                                                                        .next(self.masked_valid,
+                                                                              self.compressed) {
 
             self.masked_valid = masked_valid;
             self.compressed = compressed;

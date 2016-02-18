@@ -1,14 +1,20 @@
-//! A bitmapped vector trie with node compression and a path cache.
+//! A bitmapped vector trie with node compression and a path cache. Values are always sorted by
+//! their index; thus iterating is always in index order.
 //!
-//! The trie does not prescribe a length or capacity beside the range of values
-//! of it's index: usize.
+//! The trie does not prescribe a length or capacity beside the range of values of it's index:
+//! usize. It could be used to compose a data structure that does behave like Vec.
 //!
-//! Branching factor is the word-size: 32 or 64. This makes the depth 6 for
-//! 32bit systems and 11 for 64bit systems.
+//! The branching factor is the word-size: 32 or 64. This makes the depth 6 for 32bit systems and
+//! 11 for 64bit systems. Because of the path cache, spatially dense indexes will not cause full
+//! depth traversal.
 //!
-//! Possible performance improvements:
+//! Performance improvements:
 //!
 //!  * enable popcnt instruction when supported
+//!
+//! Possible code improvements:
+//!
+//!  * with better use of generics, some code duplication might be avoided
 //!
 //! # Usage
 //!
@@ -284,41 +290,79 @@ impl<T> TrieNode<T> {
     }
 
     /// Retains only the elements specified by the predicate.
-    pub fn retain_if<F>(&mut self, _index: usize, _depth: usize, _f: F)
-        where F: FnMut(usize, &mut T) -> bool {
-    // recurse into trie
-    //
-    // match self {
-    // &mut TrieNode::Interior(ref mut branch) => {
-    // let shift = depth * BRANCHING_FACTOR_BITS;
-    //
-    // iter over local comprawvec entries
-    // let local_index = (index >> shift) & BRANCHING_INDEX_MASK;
-    //
-    // let (value, empty_child) = {
-    // let mut maybe_child = branch.get_mut(local_index as usize);
-    //
-    // if let Some(ref mut child) = maybe_child {
-    // child.remove(index, depth - 1, cache)
-    // } else {
-    //
-    // }
-    // };
-    //
-    // if empty_child {
-    // branch.remove(local_index as usize);
-    // }*/
-    // },
-    //
-    // &mut TrieNode::Exterior(ref mut leaf) => {
-    // let local_index = index & BRANCHING_INDEX_MASK;
-    //
-    // iter over local comprawvec entries
-    // if !f(index, leaf.get_mut(local_index)) {
-    // leaf.remove(local_index as usize);
-    // }*/
-    // }
-    // }
+    pub fn retain_if<F>(&mut self, index: usize, depth: usize, f: &F) -> bool
+        where F: Fn(usize, &mut T) -> bool
+    {
+        // recurse into trie
+
+        match self {
+            &mut TrieNode::Interior(ref mut int_vec) => {
+                // interior CompVec
+                let shift = depth * BRANCHING_FACTOR_BITS;
+                let mut masked_valid = VALID_MAX;
+                let mut compressed = 0;
+
+                // for each child node...
+                loop {
+                    let (do_remove, local_index, next_masked_valid, next_compressed) = {
+                        // look up next child mutably inside this scope
+                        if let Some(((v, c), (i, ref mut child))) = int_vec.next_mut(masked_valid,
+                                                                                     compressed) {
+
+                            let index = index | (i << shift);
+
+                            // recurse into child
+                            (child.retain_if(index, depth - 1, f), i, v, c)
+                        } else {
+                            break;
+                        }
+                    };
+
+                    if do_remove {
+                        // remove is a mutable operation and can't be called in the same scope as
+                        // int_vec.next_mut()
+                        int_vec.remove(local_index as usize);
+                    } else {
+                        compressed = next_compressed;  // only advance compressed if not removed
+                    }
+
+                    masked_valid = next_masked_valid;
+                }
+
+                int_vec.is_empty()
+            }
+
+            &mut TrieNode::Exterior(ref mut ext_vec) => {
+                // exterior CompVec
+                let mut masked_valid = VALID_MAX;
+                let mut compressed = 0;
+
+                loop {
+                    let (do_remove, local_index, next_masked_valid, next_compressed) = {
+
+                        if let Some(((v, c), (i, ref mut value))) = ext_vec.next_mut(masked_valid,
+                                                                                     compressed) {
+
+                            let index = index | i;
+
+                            (f(index, value), i, v, c)
+                        } else {
+                            break;
+                        }
+                    };
+
+                    if do_remove {
+                        ext_vec.remove(local_index as usize);
+                    } else {
+                        compressed = next_compressed;
+                    }
+
+                    masked_valid = next_masked_valid;
+                }
+
+                ext_vec.is_empty()
+            }
+        }
     }
 }
 
@@ -413,6 +457,13 @@ impl<T> PathCache<T> {
         self.path_cache[depth].invalidate();
     }
 
+    /// Invalidated the whole cache
+    fn invalidate_all(&mut self) {
+        for depth in 0..BRANCHING_DEPTH {
+            self.path_cache[depth].invalidate();
+        }
+    }
+
     /// Get the deepest node that can match the index against the cache.
     // TODO: integrate lookup into path_cache in here, rolling back to nearest
     // entry if the first lookup is to an invalid entry
@@ -489,7 +540,8 @@ impl<T> Trie<T> {
         }
     }
 
-    /// Set an entry to a value, moving the new value into the trie.
+    /// Set an entry to a value, moving the new value into the trie. Updates the internal path
+    /// cache to point at this index.
     pub fn set(&mut self, index: usize, value: T) -> &mut T {
         let cache = unsafe { &mut *self.cache.get() };
 
@@ -500,7 +552,8 @@ impl<T> Trie<T> {
         }
     }
 
-    /// Retrieve a mutable reference to the value at the given index.
+    /// Retrieve a mutable reference to the value at the given index. Updates the internal path
+    /// cache to point at this index.
     pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
         let cache = unsafe { &mut *self.cache.get() };
 
@@ -511,7 +564,8 @@ impl<T> Trie<T> {
         }
     }
 
-    /// Retrieve a reference to the value at the given index.
+    /// Retrieve a reference to the value at the given index. Updates the internal path cache to
+    /// point at this index.
     pub fn get(&self, index: usize) -> Option<&T> {
         let cache = unsafe { &mut *self.cache.get() };
 
@@ -522,7 +576,8 @@ impl<T> Trie<T> {
         }
     }
 
-    /// Remove an entry, returning the associated value.
+    /// Remove an entry, returning the associated value. Invalidates the internal path cache from
+    /// the depth of tree modification out to the leaf if anything was removed.
     pub fn remove(&mut self, index: usize) -> Option<T> {
         let cache = unsafe { &mut *self.cache.get() };
 
@@ -535,6 +590,14 @@ impl<T> Trie<T> {
         } else {
             None
         }
+    }
+
+    /// Retains only the elements specified by the predicate. Invalidates the cache entirely.
+    pub fn retain_if<F>(&mut self, f: &F)
+        where F: Fn(usize, &mut T) -> bool
+    {
+        self.root.retain_if(0usize, BRANCHING_DEPTH - 1, f);
+        unsafe { &mut *self.cache.get() }.invalidate_all();
     }
 
     // TODO:
