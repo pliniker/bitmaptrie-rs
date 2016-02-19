@@ -200,6 +200,46 @@ impl<T> TrieNode<T> {
         }
     }
 
+    fn get_default_mut<F>(&mut self,
+                          index: usize,
+                          depth: usize,
+                          default: F,
+                          cache: &mut PathCache<T>)
+                          -> &mut T
+        where F: Fn() -> T
+    {
+        let mut depth = depth;
+        let mut shift = depth * BRANCHING_FACTOR_BITS;
+        let mut current = self;
+
+        loop {
+            let local_index = (index >> shift) & BRANCHING_INDEX_MASK;
+
+            match moving(current) {
+                &mut TrieNode::Interior(ref mut branch) => {
+                    let child = branch.get_default_mut(local_index, || {
+                        if depth > 1 {
+                            Self::new_branch()
+                        } else {
+                            Self::new_leaf()
+                        }
+                    });
+
+                    depth -= 1;
+                    shift -= BRANCHING_FACTOR_BITS;
+
+                    cache.set(depth, local_index, child);
+
+                    current = child;
+                }
+
+                &mut TrieNode::Exterior(ref mut leaf) => {
+                    return leaf.get_default_mut(local_index, default);
+                }
+            }
+        }
+    }
+
     fn get_mut(&mut self, index: usize, depth: usize, cache: &mut PathCache<T>) -> Option<&mut T> {
 
         let mut depth = depth;
@@ -352,7 +392,7 @@ impl<T> TrieNode<T> {
 
                             let index = index | i;
 
-                            (f(index, value), i, v, c)
+                            (!f(index, value), i, v, c)
                         } else {
                             break;
                         }
@@ -559,6 +599,21 @@ impl<T> Trie<T> {
         }
     }
 
+    /// Retrieve a mutable reference to the value at the given index. If the index does not have
+    /// an associated value, call the default function to generate a value for that index and
+    /// return the reference to it. Updates the internal path cache to point at this index.
+    pub fn get_default_mut<F>(&mut self, index: usize, default: F) -> &mut T
+        where F: Fn() -> T
+    {
+        let cache = unsafe { &mut *self.cache.get() };
+
+        if let Some((start_node, depth)) = cache.get_node_mut(index) {
+            unsafe { &mut *start_node }.get_default_mut(index, depth as usize, default, cache)
+        } else {
+            self.root.get_default_mut(index, BRANCHING_DEPTH - 1, default, cache)
+        }
+    }
+
     /// Retrieve a mutable reference to the value at the given index. Updates the internal path
     /// cache to point at this index.
     pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
@@ -600,10 +655,10 @@ impl<T> Trie<T> {
     }
 
     /// Retains only the elements specified by the predicate. Invalidates the cache entirely.
-    pub fn retain_if<F>(&mut self, f: &F)
+    pub fn retain_if<F>(&mut self, f: F)
         where F: Fn(usize, &mut T) -> bool
     {
-        self.root.retain_if(0usize, BRANCHING_DEPTH - 1, f);
+        self.root.retain_if(0usize, BRANCHING_DEPTH - 1, &f);
         unsafe { &mut *self.cache.get() }.invalidate_all();
     }
 

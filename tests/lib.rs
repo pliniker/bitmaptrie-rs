@@ -230,4 +230,78 @@ mod tests {
 
         assert_eq!(i.next(), None);
     }
+
+    #[test]
+    fn test_trie_iter_mut() {
+        let test_data = [(1, 0), (1000, 999), (100000, 99999), (1000000, 999999)];
+        let mut t: Trie<usize> = Trie::new();
+
+        for &(k, v) in &test_data {
+            t.set(k, v);
+        }
+
+        for (_, v) in t.iter_mut() {
+            *v += 1;
+        }
+
+        for (k, v) in t.iter() {
+            assert_eq!(k, *v);
+        }
+    }
+
+    #[test]
+    fn test_trie_retain_if() {
+        let count = 1000;
+        let mut t: Trie<usize> = Trie::new();
+
+        for i in 0..count {
+            t.set(i, i + 1);
+        }
+
+        // keep values whose index's 3 lsb are 0; equalize value with index
+        t.retain_if(|k, v| {
+            if k & 0x7 == 0 {
+                *v -= 1;
+                true
+            } else {
+                false
+            }
+        });
+
+        for (k, v) in t.iter() {
+            println!("{} => {}", k, *v);
+        }
+
+        for i in 0..count {
+            if let Some(v) = t.get(i) {
+                println!("i = {}, v = {}", i, *v);
+                assert!(i & 0x7 == 0);
+                assert!(*v == i);
+            } else {
+                println!("i = {}", i);
+                assert!(i & 0x7 != 0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_trie_get_default() {
+        let mut t: Trie<String> = Trie::new();
+
+        if let Some(_) = t.get(123) {
+            assert!(false);
+        }
+
+        {
+            let value = t.get_default_mut(123, || { String::from("testing") });
+
+            assert!(*value == "testing");
+
+            *value = String::from("tested");
+        }
+
+        if let Some(new_val) = t.get(123) {
+            assert!(*new_val == "tested");
+        }
+    }
 }
