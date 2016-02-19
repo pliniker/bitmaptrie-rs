@@ -337,8 +337,8 @@ impl<T> TrieNode<T> {
     }
 
     /// Retains only the elements specified by the predicate.
-    pub fn retain_if<F>(&mut self, index: usize, depth: usize, f: &F) -> bool
-        where F: Fn(usize, &mut T) -> bool
+    pub fn retain_if<F>(&mut self, index: usize, depth: usize, f: &mut F) -> bool
+        where F: FnMut(usize, &mut T) -> bool
     {
         // must be recursive in order to delete empty leaves and branches
 
@@ -655,10 +655,10 @@ impl<T> Trie<T> {
     }
 
     /// Retains only the elements specified by the predicate. Invalidates the cache entirely.
-    pub fn retain_if<F>(&mut self, f: F)
-        where F: Fn(usize, &mut T) -> bool
+    pub fn retain_if<F>(&mut self, mut f: F)
+        where F: FnMut(usize, &mut T) -> bool
     {
-        self.root.retain_if(0usize, BRANCHING_DEPTH - 1, &f);
+        self.root.retain_if(0usize, BRANCHING_DEPTH - 1, &mut f);
         unsafe { &mut *self.cache.get() }.invalidate_all();
     }
 
