@@ -251,7 +251,7 @@ mod tests {
 
     #[test]
     fn test_trie_retain_if() {
-        let count = 1000;
+        let count = 1000000;
         let mut t: Trie<usize> = Trie::new();
 
         for i in 0..count {
