@@ -259,6 +259,7 @@ impl<T> TrieNode<T> {
 
                         current = child;
                     } else {
+                        cache.invalidate_down(depth);
                         return None;
                     }
                 }
@@ -287,6 +288,7 @@ impl<T> TrieNode<T> {
 
                         current = child;
                     } else {
+                        cache.invalidate_down(depth);
                         return None;
                     }
                 }
@@ -471,27 +473,21 @@ impl<T> PathCache<T> {
     }
 
     /// Calculate where to start looking in the cache
-    fn get_start(&mut self, index: usize) -> (u8, u8) {
-        let mut depth = BRANCHING_DEPTH;
-
+    fn get_start(&mut self, index: usize) -> u8 {
         // calulate the bit difference between the last access and the current
         // one and use the count of leading zeros (indicating no difference)
         // to predict where the least significant cache-hit might be
-        if let Some(last_index) = self.index_cache {
-            // the msb bits that are covered by self.root, no cache lookup
-            let msb_ignore = WORD_SIZE % BRANCHING_FACTOR_BITS;
+        let depth = if let Some(last_index) = self.index_cache {
+            let diff = WORD_SIZE - (index ^ last_index).leading_zeros() as usize;
 
-            let diff = (index ^ last_index) << msb_ignore;
-            let similarity = diff.leading_zeros();
-
-            depth -= similarity as usize / BRANCHING_FACTOR_BITS + 1;
-        }
+            (diff / BRANCHING_FACTOR_BITS) + if diff % BRANCHING_FACTOR_BITS > 0 { 1 } else { 0 }
+        } else {
+            BRANCHING_DEPTH
+        };
 
         self.index_cache = Some(index);
 
-        let shift = (depth + 1) * BRANCHING_FACTOR_BITS;
-
-        (depth as u8, shift as u8)
+        depth as u8
     }
 
     /// Update the cache line at the given depth with a new index and node.
@@ -506,24 +502,34 @@ impl<T> PathCache<T> {
 
     /// Invalidated the whole cache
     fn invalidate_all(&mut self) {
-        for depth in 0..BRANCHING_DEPTH {
-            self.path_cache[depth].invalidate();
+        for d in 0..BRANCHING_DEPTH {
+            self.path_cache[d].invalidate();
+        }
+    }
+
+    /// Invalidate cache from the given depth down.
+    fn invalidate_down(&mut self, depth: usize) {
+        for d in 0..(depth + 1) {
+            self.path_cache[d].invalidate();
         }
     }
 
     /// Get the deepest node that can match the index against the cache.
-    // TODO: integrate lookup into path_cache in here, rolling back to nearest
-    // entry if the first lookup is to an invalid entry
     fn get_node(&mut self, index: usize) -> Option<(*const TrieNode<T>, u8)> {
-        let (cached_depth, shift) = self.get_start(index);
+        // down to this depth at least matches the last access
+        let mut cached_depth = self.get_start(index);
 
-        if cached_depth < BRANCHING_DEPTH as u8 {
-            let local_index = (index >> shift) & BRANCHING_INDEX_MASK;
+        while cached_depth < (BRANCHING_DEPTH as u8 - 1) {
+            let parent_shift = (cached_depth + 1) * BRANCHING_FACTOR_BITS as u8;
+            let parent_index = (index >> parent_shift) & BRANCHING_INDEX_MASK;
+
             let cache = &self.path_cache[cached_depth as usize];
 
-            if cache.is_hit(local_index) {
+            if cache.is_hit(parent_index) {
                 return Some((cache.get(), cached_depth));
             }
+
+            cached_depth += 1;
         }
 
         None
@@ -531,17 +537,20 @@ impl<T> PathCache<T> {
 
     /// Get the deepest node that can match the index against the cache.
     fn get_node_mut(&mut self, index: usize) -> Option<(*mut TrieNode<T>, u8)> {
-        // look in the cache first, to see if we already have references
-        // to the appropriate interior nodes
-        let (cached_depth, shift) = self.get_start(index);
+        // down to this depth at least matches the last access
+        let mut cached_depth = self.get_start(index);
 
-        if cached_depth < BRANCHING_DEPTH as u8 {
-            let local_index = (index >> shift) & BRANCHING_INDEX_MASK;
+        while cached_depth < (BRANCHING_DEPTH as u8 - 1) {
+            let parent_shift = (cached_depth + 1) * BRANCHING_FACTOR_BITS as u8;
+            let parent_index = (index >> parent_shift) & BRANCHING_INDEX_MASK;
+
             let cache = &self.path_cache[cached_depth as usize];
 
-            if cache.is_hit(local_index) {
+            if cache.is_hit(parent_index) {
                 return Some((cache.get_mut(), cached_depth));
             }
+
+            cached_depth += 1;
         }
 
         None
