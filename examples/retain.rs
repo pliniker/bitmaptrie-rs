@@ -4,30 +4,22 @@ extern crate bitmaptrie;
 use bitmaptrie::Trie;
 
 
-const TEST_SIZE: usize = 1 << 20;
+const TEST_SIZE: usize = 32;
 
 
 fn main() {
-    let mut t: Trie<usize> = Trie::new();
+    let mut t: Trie<String> = Trie::new();
 
-    for _ in 0..TEST_SIZE {
-        for i in 0..TEST_SIZE {
-            let b = Box::new(String::from("testing"));
-            let r = Box::into_raw(b);
+    for i in 0..TEST_SIZE {
+        t.set(i, String::from("testing"));
+    }
 
-            t.set(r as usize, i);
-        }
+    t.retain_if(|index, _value| {
+        // keep odd numbered indeces
+        index & 0x1 == 0x1
+    });
 
-        println!("sweeping");
-
-        t.retain_if(|ptr, _| {
-            let b = unsafe { Box::from_raw(ptr as *mut String) };
-            drop(b);
-            false
-        });
-
-        for (index, value) in t.iter() {
-            println!("i = {}", index);
-        }
+    for (index, value) in t.iter() {
+        println!("index = {}, value = {}", index, *value);
     }
 }
