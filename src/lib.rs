@@ -157,19 +157,39 @@ pub struct IterMut<'a, T: 'a> {
 }
 
 
-/// Borrows a Trie, exposing a Sync-safe subset of it's methods.
+/// Borrows a Trie mutably, exposing a Sync-safe subset of it's methods. No trie structure
+/// modifying methods are included.
+/// The lifetime of this type is the lifetime of the mutable borrow.
 pub struct ParallelBorrow<'a, T: 'a> {
     trie: *mut Trie<T>,
     _marker: PhantomData<&'a T>
 }
 
 
-unsafe impl<T: Send> Send for TrieNode<T> {}
+/// A type that references an interior Trie node. For splitting a Trie into sub-nodes, each of
+/// which can be passed to a different thread for mutable structural changes.
+pub struct SubTrie<'a, T: 'a> {
+    node: *mut TrieNode<T>,
+    _marker: PhantomData<&'a T>
+}
+
+
+/// Iterator type that returns interior nodes in the SubTrie type, on which mutable operations
+/// can be performed.
+pub struct SubTrieIter<'a, T: 'a> {
+    _marker: PhantomData<&'a T>
+}
+
+
 unsafe impl<T: Send> Send for TrieNodePtr<T> {}
 unsafe impl<T: Send> Send for PathCache<T> {}
+
+unsafe impl<T: Send> Send for TrieNode<T> {}
 unsafe impl<T: Send> Send for Trie<T> {}
+
 unsafe impl<'a, T: Send> Send for Iter<'a, T> {}
 unsafe impl<'a, T: Send> Send for IterMut<'a, T> {}
+
 unsafe impl<'a, T: Send> Send for ParallelBorrow<'a, T> {}
 unsafe impl<'a, T: Send + Sync> Sync for ParallelBorrow<'a, T> {}
 
