@@ -157,6 +157,23 @@ pub struct IterMut<'a, T: 'a> {
 }
 
 
+/// Borrows a Trie, exposing a Sync-safe subset of it's methods.
+pub struct ParallelBorrow<'a, T: 'a> {
+    trie: *mut Trie<T>,
+    _marker: PhantomData<&'a T>
+}
+
+
+unsafe impl<T: Send> Send for TrieNode<T> {}
+unsafe impl<T: Send> Send for TrieNodePtr<T> {}
+unsafe impl<T: Send> Send for PathCache<T> {}
+unsafe impl<T: Send> Send for Trie<T> {}
+unsafe impl<'a, T: Send> Send for Iter<'a, T> {}
+unsafe impl<'a, T: Send> Send for IterMut<'a, T> {}
+unsafe impl<'a, T: Send> Send for ParallelBorrow<'a, T> {}
+unsafe impl<'a, T: Send + Sync> Sync for ParallelBorrow<'a, T> {}
+
+
 impl<T> TrieNode<T> {
     fn new_branch() -> TrieNode<T> {
         TrieNode::Interior(CompVec::new())
@@ -775,6 +792,12 @@ impl<T> Trie<T> {
     pub fn iter_mut(&mut self) -> IterMut<T> {
         IterMut::new(&mut self.root)
     }
+
+    /// Create a mutable borrow that gives a subset of functions that can be accessed across
+    /// threads.
+    pub fn parallel_borrow(&mut self) -> ParallelBorrow<T> {
+        ParallelBorrow::from_trie(self)
+    }
 }
 
 
@@ -948,5 +971,38 @@ impl<'a, T> Iterator for IterMut<'a, T> {
                 }
             }
         }
+    }
+}
+
+
+impl<'a, T> ParallelBorrow<'a, T> {
+    fn from_trie(trie: &'a mut Trie<T>) -> ParallelBorrow<'a, T> {
+        ParallelBorrow {
+            trie: trie,
+            _marker: PhantomData
+        }
+    }
+
+    pub fn clone(&self) -> ParallelBorrow<'a, T> {
+        ParallelBorrow {
+            trie: self.trie,
+            _marker: PhantomData
+        }
+    }
+
+    fn trie(&self) -> &'a Trie<T> {
+        unsafe { &*self.trie }
+    }
+
+    fn trie_mut(&mut self) -> &'a mut Trie<T> {
+        unsafe { &mut *self.trie }
+    }
+
+    pub fn get(&self, index: usize) -> Option<&'a T> {
+        self.trie().get(index)
+    }
+
+    pub fn get_mut(&mut self, index: usize) -> Option<&'a mut T> {
+        self.trie_mut().get_mut(index)
     }
 }
