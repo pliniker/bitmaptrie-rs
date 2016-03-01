@@ -304,4 +304,30 @@ mod tests {
             assert!(*new_val == "tested");
         }
     }
+
+    #[test]
+    fn test_trie_borrow_sync() {
+        let mut t: Trie<usize> = Trie::new();
+        t.set(123, 0);
+
+        {
+            let mut sync_1 = t.borrow_sync();
+
+            if let Some(value) = sync_1.get_mut(123) {
+                *value += 1;
+            }
+
+            let sync_2 = sync_1.clone();
+
+            if let Some(_) = sync_2.get(124) {
+                assert!(false);
+            }
+        }
+
+        if let Some(value) = t.get(123) {
+            assert!(*value == 1);
+        } else {
+            assert!(false);
+        }
+    }
 }

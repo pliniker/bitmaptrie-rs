@@ -160,9 +160,9 @@ pub struct IterMut<'a, T: 'a> {
 /// Borrows a Trie mutably, exposing a Sync-safe subset of it's methods. No trie structure
 /// modifying methods are included.
 /// The lifetime of this type is the lifetime of the mutable borrow.
-pub struct ParallelBorrow<'a, T: 'a> {
+pub struct BorrowSync<'a, T: 'a> {
     trie: *mut Trie<T>,
-    _marker: PhantomData<&'a T>
+    _marker: PhantomData<&'a T>,
 }
 
 
@@ -170,14 +170,14 @@ pub struct ParallelBorrow<'a, T: 'a> {
 /// which can be passed to a different thread for mutable structural changes.
 pub struct SubTrie<'a, T: 'a> {
     node: *mut TrieNode<T>,
-    _marker: PhantomData<&'a T>
+    _marker: PhantomData<&'a T>,
 }
 
 
 /// Iterator type that returns interior nodes in the SubTrie type, on which mutable operations
 /// can be performed.
 pub struct SubTrieIter<'a, T: 'a> {
-    _marker: PhantomData<&'a T>
+    root: &'a mut TrieNode<T>,
 }
 
 
@@ -190,10 +190,17 @@ unsafe impl<T: Send> Send for Trie<T> {}
 unsafe impl<'a, T: Send> Send for Iter<'a, T> {}
 unsafe impl<'a, T: Send> Send for IterMut<'a, T> {}
 
-unsafe impl<'a, T: Send> Send for ParallelBorrow<'a, T> {}
-unsafe impl<'a, T: Send + Sync> Sync for ParallelBorrow<'a, T> {}
+unsafe impl<'a, T: Send> Send for BorrowSync<'a, T> {}
+unsafe impl<'a, T: Send + Sync> Sync for BorrowSync<'a, T> {}
 
 
+// TrieNode is a recursive tree data structure where each node has up to 32 or 64 branches
+// depending on the system word size. The tree has a depth attribute which is counted inversely,
+// that is, zero is the leaves of the tree rather than the root.
+//
+// Each accessor method takes a PathCache<T> parameter. On access, the path cache is updated
+// with the path taken through the tree. In some cases, the cache is invalidated if a path
+// is or might have been destroyed.
 impl<T> TrieNode<T> {
     fn new_branch() -> TrieNode<T> {
         TrieNode::Interior(CompVec::new())
@@ -203,6 +210,7 @@ impl<T> TrieNode<T> {
         TrieNode::Exterior(CompVec::new())
     }
 
+    // Inserts a new value at the given index or replaces an existing value at that index.
     fn set(&mut self, index: usize, value: T, depth: usize, cache: &mut PathCache<T>) -> &mut T {
 
         let mut depth = depth;
@@ -237,6 +245,8 @@ impl<T> TrieNode<T> {
         }
     }
 
+    // Returns a mutable reference to the given index. If no value is at that index, inserts a
+    // value using the default function and returns the reference to that.
     fn get_default_mut<F>(&mut self,
                           index: usize,
                           depth: usize,
@@ -277,6 +287,7 @@ impl<T> TrieNode<T> {
         }
     }
 
+    // Return a mutable reference to a value at the given index or None if there is no value there.
     fn get_mut(&mut self, index: usize, depth: usize, cache: &mut PathCache<T>) -> Option<&mut T> {
 
         let mut depth = depth;
@@ -306,6 +317,7 @@ impl<T> TrieNode<T> {
         }
     }
 
+    // Return a reference to a value at the given index or None if there is no value there.
     fn get(&self, index: usize, depth: usize, cache: &mut PathCache<T>) -> Option<&T> {
 
         let mut depth = depth;
@@ -335,7 +347,7 @@ impl<T> TrieNode<T> {
         }
     }
 
-    /// Remove an entry if it exists, returning it if it existed.
+    // Remove an entry if it exists, returning it if it existed.
     fn remove(&mut self,
               index: usize,
               depth: usize,
@@ -375,7 +387,7 @@ impl<T> TrieNode<T> {
         }
     }
 
-    /// Retains only the elements specified by the predicate.
+    // Retains only the elements specified by the predicate.
     pub fn retain_if<F>(&mut self, index: usize, depth: usize, f: &mut F) -> bool
         where F: FnMut(usize, &mut T) -> bool
     {
@@ -453,29 +465,6 @@ impl<T> TrieNode<T> {
 }
 
 
-impl<T> Clone for TrieNodePtr<T> {
-    fn clone(&self) -> TrieNodePtr<T> {
-        TrieNodePtr {
-            index: self.index,
-            node: self.node,
-        }
-    }
-}
-
-
-impl<T> Copy for TrieNodePtr<T> {}
-
-
-impl<T> Default for TrieNodePtr<T> {
-    fn default() -> TrieNodePtr<T> {
-        TrieNodePtr {
-            index: 0,
-            node: null_mut(),
-        }
-    }
-}
-
-
 impl<T> TrieNodePtr<T> {
     fn set(&mut self, index: usize, node: &TrieNode<T>) {
         self.index = index;
@@ -500,6 +489,29 @@ impl<T> TrieNodePtr<T> {
 }
 
 
+impl<T> Clone for TrieNodePtr<T> {
+    fn clone(&self) -> TrieNodePtr<T> {
+        TrieNodePtr {
+            index: self.index,
+            node: self.node,
+        }
+    }
+}
+
+
+impl<T> Copy for TrieNodePtr<T> {}
+
+
+impl<T> Default for TrieNodePtr<T> {
+    fn default() -> TrieNodePtr<T> {
+        TrieNodePtr {
+            index: 0,
+            node: null_mut(),
+        }
+    }
+}
+
+
 impl<T> PathCache<T> {
     fn new() -> PathCache<T> {
         PathCache {
@@ -509,7 +521,7 @@ impl<T> PathCache<T> {
         }
     }
 
-    /// Calculate where to start looking in the cache
+    // Calculate where to start looking in the cache
     fn get_start(&mut self, index: usize) -> u8 {
         // calulate the bit difference between the last access and the current
         // one and use the count of leading zeros (indicating no difference)
@@ -527,31 +539,31 @@ impl<T> PathCache<T> {
         depth as u8
     }
 
-    /// Update the cache line at the given depth with a new index and node.
+    // Update the cache line at the given depth with a new index and node.
     fn set(&mut self, depth: usize, index: usize, node: &TrieNode<T>) {
         self.path_cache[depth].set(index, node);
     }
 
-    /// Invalidate the cache line at the given depth.
+    // Invalidate the cache line at the given depth.
     fn invalidate(&mut self, depth: usize) {
         self.path_cache[depth].invalidate();
     }
 
-    /// Invalidated the whole cache
+    // Invalidated the whole cache
     fn invalidate_all(&mut self) {
         for d in 0..BRANCHING_DEPTH {
             self.path_cache[d].invalidate();
         }
     }
 
-    /// Invalidate cache from the given depth down.
+    // Invalidate cache from the given depth down.
     fn invalidate_down(&mut self, depth: usize) {
         for d in 0..(depth + 1) {
             self.path_cache[d].invalidate();
         }
     }
 
-    /// Get the deepest node that can match the index against the cache.
+    // Get the deepest node that can match the index against the cache.
     fn get_node(&mut self, index: usize) -> Option<(*const TrieNode<T>, u8)> {
         // down to this depth at least matches the last access
         let mut cached_depth = self.get_start(index);
@@ -572,7 +584,7 @@ impl<T> PathCache<T> {
         None
     }
 
-    /// Get the deepest node that can match the index against the cache.
+    // Get the deepest node that can match the index against the cache.
     fn get_node_mut(&mut self, index: usize) -> Option<(*mut TrieNode<T>, u8)> {
         // down to this depth at least matches the last access
         let mut cached_depth = self.get_start(index);
@@ -593,12 +605,12 @@ impl<T> PathCache<T> {
         None
     }
 
-    /// Increment the generation number, wrapping back to zero on overflow
+    // Increment the generation number, wrapping back to zero on overflow
     fn new_generation(&mut self) {
         self.generation = self.generation.wrapping_add(1);
     }
 
-    /// Are these caches synchronized on the same generation?
+    // Are these caches synchronized on the same generation?
     fn in_sync_to(&self, other: &PathCache<T>) -> bool {
         self.generation == other.generation
     }
@@ -814,9 +826,18 @@ impl<T> Trie<T> {
     }
 
     /// Create a mutable borrow that gives a subset of functions that can be accessed across
-    /// threads.
-    pub fn parallel_borrow(&mut self) -> ParallelBorrow<T> {
-        ParallelBorrow::from_trie(self)
+    /// threads if `T` is Sync. Suitable only for a scoped thread as the lifetime of the
+    /// `BorrowSync` instance is not `'static` but the same duration as the borrow.
+    pub fn borrow_sync(&mut self) -> BorrowSync<T> {
+        BorrowSync::new(self)
+    }
+
+    /// Split the trie into at minimum `n` nodes (by doing a breadth-first search for the depth
+    /// with at least that many interior nodes) and return an Iterator type that iterates over the
+    /// nodes. There is no upper bound on the number of nodes returned and less than n may be
+    /// returned.
+    pub fn nodes_mut(&mut self, n: usize) -> SubTrieIter<T> {
+        SubTrieIter::new(&mut self.root, n)
     }
 }
 
@@ -995,17 +1016,10 @@ impl<'a, T> Iterator for IterMut<'a, T> {
 }
 
 
-impl<'a, T> ParallelBorrow<'a, T> {
-    fn from_trie(trie: &'a mut Trie<T>) -> ParallelBorrow<'a, T> {
-        ParallelBorrow {
+impl<'a, T> BorrowSync<'a, T> {
+    fn new(trie: &'a mut Trie<T>) -> BorrowSync<'a, T> {
+        BorrowSync {
             trie: trie,
-            _marker: PhantomData
-        }
-    }
-
-    pub fn clone(&self) -> ParallelBorrow<'a, T> {
-        ParallelBorrow {
-            trie: self.trie,
             _marker: PhantomData
         }
     }
@@ -1018,11 +1032,28 @@ impl<'a, T> ParallelBorrow<'a, T> {
         unsafe { &mut *self.trie }
     }
 
+    /// Clone this instance: the new instance can be sent to another thread.
+    pub fn clone(&self) -> BorrowSync<'a, T> {
+        BorrowSync {
+            trie: self.trie,
+            _marker: PhantomData
+        }
+    }
+
     pub fn get(&self, index: usize) -> Option<&'a T> {
         self.trie().get(index)
     }
 
     pub fn get_mut(&mut self, index: usize) -> Option<&'a mut T> {
         self.trie_mut().get_mut(index)
+    }
+}
+
+
+impl<'a, T: 'a> SubTrieIter<'a, T> {
+    fn new(root: &'a mut TrieNode<T>, n: usize) -> SubTrieIter<'a, T> {
+        SubTrieIter {
+            root: root
+        }
     }
 }
