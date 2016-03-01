@@ -330,4 +330,35 @@ mod tests {
             assert!(false);
         }
     }
+
+    #[test]
+    fn test_trie_borrow_split() {
+        let magic_number = 4;
+
+        let word_size = std::mem::size_of::<usize>() * 8;
+        let factor = word_size * word_size * word_size * word_size;
+
+        let mut t: Trie<usize> = Trie::new();
+
+        for i in 0..magic_number {
+            t.set(i * factor, 0);
+        }
+
+        // check number of chunks the trie got split into
+        {
+            let mut guard = t.borrow_split(magic_number);
+            assert!(guard.iter_mut().count() == magic_number);
+        }
+
+        // remove all values concurrently
+        {
+            let mut guard = t.borrow_split(magic_number);
+
+            for node in guard.iter_mut() {
+                node.retain_if(|_, _| false);
+            }
+        }
+
+        assert!(t.iter().count() == 0);
+    }
 }

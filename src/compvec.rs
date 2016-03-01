@@ -2,6 +2,7 @@
 
 
 use std;
+use std::marker::PhantomData;
 
 use comprawvec::CompRawVec;
 use WORD_SIZE;
@@ -36,6 +37,15 @@ pub struct Iter<'a, T: 'a> {
     vec: &'a CompVec<T>,
     masked_valid: usize,
     compressed: usize,
+}
+
+
+/// A type that implements Iterator for mutable values of CompVec
+pub struct IterMut<'a, T: 'a> {
+    vec: *mut CompVec<T>,
+    masked_valid: usize,
+    compressed: usize,
+    _marker: PhantomData<&'a T>,
 }
 
 
@@ -191,6 +201,15 @@ impl<T> CompVec<T> {
         }
     }
 
+    pub fn iter_mut(&mut self) -> IterMut<T> {
+        IterMut {
+            vec: self,
+            masked_valid: VALID_MAX,
+            compressed: 0,
+            _marker: PhantomData,
+        }
+    }
+
     pub fn new() -> CompVec<T> {
         CompVec { data: CompRawVec::new() }
     }
@@ -205,6 +224,26 @@ impl<'a, T> Iterator for Iter<'a, T> {
         if let Some(((masked_valid, compressed), (index, value))) = self.vec
                                                                         .next(self.masked_valid,
                                                                               self.compressed) {
+
+            self.masked_valid = masked_valid;
+            self.compressed = compressed;
+            Some((index, value))
+        } else {
+            None
+        }
+    }
+}
+
+
+impl<'a, T> Iterator for IterMut<'a, T> {
+    type Item = (usize, &'a mut T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+
+        let mut vec = unsafe { &mut *self.vec };
+
+        if let Some(((masked_valid, compressed), (index, value))) = vec.next_mut(self.masked_valid,
+                                                                                 self.compressed) {
 
             self.masked_valid = masked_valid;
             self.compressed = compressed;

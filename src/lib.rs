@@ -39,6 +39,8 @@
 
 
 use std::cell::Cell;
+use std::collections::VecDeque;
+use std::collections::vec_deque::IterMut as VecDequeIterMut;
 use std::marker::PhantomData;
 use std::mem::transmute;
 use std::ops::{Index, IndexMut};
@@ -169,6 +171,7 @@ pub struct BorrowSync<'a, T: 'a> {
 /// A type that references an interior Trie node. For splitting a Trie into sub-nodes, each of
 /// which can be passed to a different thread for mutable structural changes.
 pub struct SubTrie<'a, T: 'a> {
+    depth: usize,
     node: *mut TrieNode<T>,
     _marker: PhantomData<&'a T>,
 }
@@ -176,8 +179,8 @@ pub struct SubTrie<'a, T: 'a> {
 
 /// Iterator type that returns interior nodes in the SubTrie type, on which mutable operations
 /// can be performed.
-pub struct SubTrieIter<'a, T: 'a> {
-    root: &'a mut TrieNode<T>,
+pub struct BorrowSplit<'a, T: 'a> {
+    buffer: VecDeque<SubTrie<'a, T>>,
 }
 
 
@@ -833,11 +836,12 @@ impl<T> Trie<T> {
     }
 
     /// Split the trie into at minimum `n` nodes (by doing a breadth-first search for the depth
-    /// with at least that many interior nodes) and return an Iterator type that iterates over the
-    /// nodes. There is no upper bound on the number of nodes returned and less than n may be
-    /// returned.
-    pub fn nodes_mut(&mut self, n: usize) -> SubTrieIter<T> {
-        SubTrieIter::new(&mut self.root, n)
+    /// with at least that many interior nodes) and return an guard type that provides an iterator
+    /// to iterate over the nodes. There is no upper bound on the number of nodes returned and less
+    /// than n may be returned. The guard type, `BorrowSplit`, guards the lifetime of the mutable
+    /// borrow, making this suitable for use in a scoped threading context.
+    pub fn borrow_split(&mut self, n: usize) -> BorrowSplit<T> {
+        BorrowSplit::new(&mut self.root, n)
     }
 }
 
@@ -1050,10 +1054,75 @@ impl<'a, T> BorrowSync<'a, T> {
 }
 
 
-impl<'a, T: 'a> SubTrieIter<'a, T> {
-    fn new(root: &'a mut TrieNode<T>, n: usize) -> SubTrieIter<'a, T> {
-        SubTrieIter {
-            root: root
+impl<'a, T: 'a> SubTrie<'a, T> {
+    fn new(depth: usize, node: *mut TrieNode<T>) -> SubTrie<'a, T> {
+        SubTrie {
+            depth: depth,
+            node: node,
+            _marker: PhantomData
         }
+    }
+}
+
+
+impl<'a, T: 'a> BorrowSplit<'a, T> {
+    fn new(root: &'a mut TrieNode<T>, n: usize) -> BorrowSplit<'a, T> {
+
+        // breadth-first search into trie to find at least n nodes
+        let mut depth = BRANCHING_DEPTH - 1;
+
+        let mut buf = VecDeque::new();
+        buf.push_back(SubTrie::new(depth, root));
+
+        loop {
+            if let Some(subtrie) = buf.pop_front() {
+                // If we've just switched to popping the next depth and there are sufficient
+                // nodes in the buffer, we're done.
+                // If we've hit depth 0, we're done.
+                if (subtrie.depth < depth && buf.len() >= n) ||
+                    subtrie.depth == 1 {
+
+                    buf.push_back(subtrie);
+                    break;
+                }
+
+                depth = subtrie.depth;
+
+                // otherwise keep looking deeper
+                if let &mut TrieNode::Interior(ref mut int_vec) = unsafe { &mut *subtrie.node } {
+                    for child in int_vec.iter_mut() {
+                        buf.push_back(SubTrie::new(subtrie.depth - 1, child.1));
+                    }
+                } else {
+                    panic!("Shouldn't have reached level 0!");
+                }
+            }
+        }
+
+        BorrowSplit {
+            buffer: buf
+        }
+    }
+
+    /// Return an Iterator that provides `SubTrie` instances that can be independently mutated.
+    pub fn iter_mut(&'a mut self) -> VecDequeIterMut<'a, SubTrie<'a, T>> {
+        self.buffer.iter_mut()
+    }
+}
+
+
+unsafe impl<'a, T: 'a> Send for SubTrie<'a, T> {}
+
+
+impl<'a, T: 'a> SubTrie<'a, T> {
+    fn value(&mut self) -> &'a mut TrieNode<T> {
+        unsafe { &mut *self.node }
+    }
+
+    /// Retains only the elements specified by the predicate. Invalidates the cache entirely.
+    pub fn retain_if<F>(&mut self, mut f: F)
+        where F: FnMut(usize, &mut T) -> bool
+    {
+        self.value().retain_if(0usize, self.depth, &mut f);
     }
 }
