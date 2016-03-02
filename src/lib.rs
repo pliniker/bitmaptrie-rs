@@ -99,9 +99,6 @@ struct TrieNodePtr<T> {
 
 /// A cached path into a trie
 pub struct PathCache<T> {
-    // used to compare caches against each other, the newest is always valid
-    generation: usize,
-
     // last index accessed using this cache
     index_cache: Option<usize>,
 
@@ -159,28 +156,33 @@ pub struct IterMut<'a, T: 'a> {
 }
 
 
-/// Borrows a Trie mutably, exposing a Sync-safe subset of it's methods. No trie structure
-/// modifying methods are included.
+/// Borrows a Trie mutably, exposing a Sync-safe subset of it's methods. No structure
+/// modifying methods are included. Each borrow gets it's own path cache.
 /// The lifetime of this type is the lifetime of the mutable borrow.
+/// This can be used to parallelize structure-immutant changes.
 pub struct BorrowSync<'a, T: 'a> {
-    trie: *mut Trie<T>,
+    root: *mut TrieNode<T>,
+    cache: Cell<*mut PathCache<T>>,
     _marker: PhantomData<&'a T>,
+}
+
+
+/// Type that borrows a Trie mutably, giving an iterable type that returns interior nodes on
+/// which structure-mutating operations can be performed. This can be used to parallelize
+/// destructive operations.
+pub struct BorrowSplit<'a, T: 'a> {
+    buffer: VecDeque<SubTrie<'a, T>>,
 }
 
 
 /// A type that references an interior Trie node. For splitting a Trie into sub-nodes, each of
 /// which can be passed to a different thread for mutable structural changes.
 pub struct SubTrie<'a, T: 'a> {
+    // higher bits that form the roots of this node
+    index: usize,
     depth: usize,
     node: *mut TrieNode<T>,
     _marker: PhantomData<&'a T>,
-}
-
-
-/// Iterator type that returns interior nodes in the SubTrie type, on which mutable operations
-/// can be performed.
-pub struct BorrowSplit<'a, T: 'a> {
-    buffer: VecDeque<SubTrie<'a, T>>,
 }
 
 
@@ -193,8 +195,10 @@ unsafe impl<T: Send> Send for Trie<T> {}
 unsafe impl<'a, T: Send> Send for Iter<'a, T> {}
 unsafe impl<'a, T: Send> Send for IterMut<'a, T> {}
 
-unsafe impl<'a, T: Send> Send for BorrowSync<'a, T> {}
-unsafe impl<'a, T: Send + Sync> Sync for BorrowSync<'a, T> {}
+unsafe impl<'a, T: Send + Sync> Send for BorrowSync<'a, T> {}
+
+unsafe impl<'a, T: 'a> Send for BorrowSplit<'a, T> {}
+unsafe impl<'a, T: 'a> Send for SubTrie<'a, T> {}
 
 
 // TrieNode is a recursive tree data structure where each node has up to 32 or 64 branches
@@ -203,7 +207,7 @@ unsafe impl<'a, T: Send + Sync> Sync for BorrowSync<'a, T> {}
 //
 // Each accessor method takes a PathCache<T> parameter. On access, the path cache is updated
 // with the path taken through the tree. In some cases, the cache is invalidated if a path
-// is or might have been destroyed.
+// is or might have been destroyed or wasn't fully followed.
 impl<T> TrieNode<T> {
     fn new_branch() -> TrieNode<T> {
         TrieNode::Interior(CompVec::new())
@@ -518,7 +522,6 @@ impl<T> Default for TrieNodePtr<T> {
 impl<T> PathCache<T> {
     fn new() -> PathCache<T> {
         PathCache {
-            generation: 0,
             index_cache: None,
             path_cache: [TrieNodePtr::<T>::default(); BRANCHING_DEPTH],
         }
@@ -607,16 +610,6 @@ impl<T> PathCache<T> {
 
         None
     }
-
-    // Increment the generation number, wrapping back to zero on overflow
-    fn new_generation(&mut self) {
-        self.generation = self.generation.wrapping_add(1);
-    }
-
-    // Are these caches synchronized on the same generation?
-    fn in_sync_to(&self, other: &PathCache<T>) -> bool {
-        self.generation == other.generation
-    }
 }
 
 
@@ -624,7 +617,6 @@ impl<T> Clone for PathCache<T> {
     fn clone(&self) -> PathCache<T> {
         PathCache {
             index_cache: self.index_cache,
-            generation: self.generation,
             path_cache: self.path_cache.clone(),
         }
     }
@@ -719,103 +711,8 @@ impl<T> Trie<T> {
     pub fn retain_if<F>(&mut self, mut f: F)
         where F: FnMut(usize, &mut T) -> bool
     {
-        self.root.retain_if(0usize, BRANCHING_DEPTH - 1, &mut f);
         unsafe { &mut *self.cache.get() }.invalidate_all();
-    }
-
-    // TODO:
-    // Per-node generation counter for cache entries to match against: this
-    // would mean checking the full path for node-generation changes on every
-    // access, but would allow concurrent non-overlapping structural changes
-    // without cache invalidation.
-    // Another benefit is that doing this might pave the way for a truly
-    // concurrent thread-safe trie.
-
-    /// Set an entry to a value, accelerating access with the given cache,
-    /// updating the cache with the new path. This function causes a new
-    /// generation since it can possibly cause memory to move around.
-    pub fn set_with_cache(&mut self, cache: &mut PathCache<T>, index: usize, value: T) -> &mut T {
-        let gen_cache = unsafe { &mut *self.cache.get() };
-
-        if !cache.in_sync_to(gen_cache) {
-            *cache = *gen_cache;
-        }
-
-        let rv = if let Some((start_node, depth)) = cache.get_node_mut(index) {
-            unsafe { &mut *start_node }.set(index, value, depth as usize, cache)
-        } else {
-            self.root.set(index, value, BRANCHING_DEPTH - 1, cache)
-        };
-
-        cache.new_generation();
-        *gen_cache = *cache;
-
-        return rv;
-    }
-
-    /// Retrieve a value, accelerating access with the given cache, updating
-    /// the cache with the new path.
-    pub fn get_mut_with_cache(&mut self, cache: &mut PathCache<T>, index: usize) -> Option<&mut T> {
-        let gen_cache = unsafe { &mut *self.cache.get() };
-
-        if !cache.in_sync_to(gen_cache) {
-            *cache = *gen_cache;
-        }
-
-        if let Some((start_node, depth)) = cache.get_node_mut(index) {
-            unsafe { &mut *start_node }.get_mut(index, depth as usize, cache)
-        } else {
-            self.root.get_mut(index, BRANCHING_DEPTH - 1, cache)
-        }
-    }
-
-    /// Retrieve a value, accelerating access with the given cache, updating
-    /// the cache with the new path.
-    pub fn get_with_cache(&self, cache: &mut PathCache<T>, index: usize) -> Option<&T> {
-
-        let gen_cache = unsafe { &mut *self.cache.get() };
-
-        if !cache.in_sync_to(gen_cache) {
-            *cache = *gen_cache;
-        }
-
-        if let Some((start_node, depth)) = cache.get_node(index) {
-            unsafe { &*start_node }.get(index, depth as usize, cache)
-        } else {
-            self.root.get(index, BRANCHING_DEPTH - 1, cache)
-        }
-    }
-
-    /// Remove an entry, accelerating access with the given cache, updating
-    /// the cache with the new path. This function causes a new generation
-    /// since it can cause memory to move around.
-    pub fn remove_with_cache(&mut self, cache: &mut PathCache<T>, index: usize) -> Option<T> {
-        let gen_cache = unsafe { &mut *self.cache.get() };
-
-        if !cache.in_sync_to(gen_cache) {
-            *cache = *gen_cache;
-        }
-
-        let rv = if let (Some(value), _) = if let Some((start_node, depth)) =
-                                                  cache.get_node_mut(index) {
-            unsafe { &mut *start_node }.remove(index, depth as usize, cache)
-        } else {
-            self.root.remove(index, BRANCHING_DEPTH - 1, cache)
-        } {
-            Some(value)
-        } else {
-            None
-        };
-
-        cache.new_generation();
-        *gen_cache = *cache;
-
-        return rv;
-    }
-
-    /// Create a new cache for this instance.
-    pub fn new_cache(&self) -> PathCache<T> {
-        PathCache::new()
+        self.root.retain_if(0usize, BRANCHING_DEPTH - 1, &mut f);
     }
 
     /// Create an iterator over immutable data
@@ -827,21 +724,37 @@ impl<T> Trie<T> {
     pub fn iter_mut(&mut self) -> IterMut<T> {
         IterMut::new(&mut self.root)
     }
+}
 
-    /// Create a mutable borrow that gives a subset of functions that can be accessed across
-    /// threads if `T` is Sync. Suitable only for a scoped thread as the lifetime of the
-    /// `BorrowSync` instance is not `'static` but the same duration as the borrow.
-    pub fn borrow_sync(&mut self) -> BorrowSync<T> {
-        BorrowSync::new(self)
-    }
 
+impl<T: Send> Trie<T> {
     /// Split the trie into at minimum `n` nodes (by doing a breadth-first search for the depth
     /// with at least that many interior nodes) and return an guard type that provides an iterator
     /// to iterate over the nodes. There is no upper bound on the number of nodes returned and less
     /// than n may be returned. The guard type, `BorrowSplit`, guards the lifetime of the mutable
-    /// borrow, making this suitable for use in a scoped threading context.
+    /// borrow, making this suitable for use in a scoped threading context. Invalidates the
+    /// cache entirely.
     pub fn borrow_split(&mut self, n: usize) -> BorrowSplit<T> {
+        unsafe { &mut *self.cache.get() }.invalidate_all();
         BorrowSplit::new(&mut self.root, n)
+    }
+
+    /// Cleans up any empty nodes that may be left dangling. This is only useful in conjunction
+    /// with borrow_split() where sub-tries may be left empty but not deleted themselves and is
+    /// entirely optional.
+    pub fn prune(&mut self) {
+        self.retain_if(|_, _| true);
+    }
+}
+
+
+impl<T: Send + Sync> Trie<T> {
+    /// Create a mutable borrow that gives a subset of functions that can be accessed across
+    /// threads if `T` is Sync. Suitable only for a scoped thread as the lifetime of the
+    /// `BorrowSync` instance is not `'static` but the same duration as the borrow. Each borrow
+    /// contains it's own path cache.
+    pub fn borrow_sync(&mut self) -> BorrowSync<T> {
+        BorrowSync::new(&mut self.root)
     }
 }
 
@@ -886,7 +799,7 @@ impl<'a, T> Iterator for Iter<'a, T> {
     type Item = (usize, &'a T);
 
     // I'm not too happy with this state machine design. It surely is possible to use generics
-    // a bit more to modularize this code.
+    // or macros a bit more to modularize this code.
     fn next(&mut self) -> Option<(usize, &'a T)> {
         loop {
             match self.current {
@@ -1021,46 +934,58 @@ impl<'a, T> Iterator for IterMut<'a, T> {
 
 
 impl<'a, T> BorrowSync<'a, T> {
-    fn new(trie: &'a mut Trie<T>) -> BorrowSync<'a, T> {
+    fn new(root: &'a mut TrieNode<T>) -> BorrowSync<'a, T> {
+        let cache = Box::into_raw(Box::new(PathCache::new()));
+
         BorrowSync {
-            trie: trie,
+            root: root,
+            cache: Cell::new(cache),
             _marker: PhantomData
         }
     }
 
-    fn trie(&self) -> &'a Trie<T> {
-        unsafe { &*self.trie }
-    }
-
-    fn trie_mut(&mut self) -> &'a mut Trie<T> {
-        unsafe { &mut *self.trie }
-    }
-
-    /// Clone this instance: the new instance can be sent to another thread.
+    /// Clone this instance: the new instance can be sent to another thread. It has it's own
+    /// path cache.
     pub fn clone(&self) -> BorrowSync<'a, T> {
+        let cache = Box::into_raw(Box::new(PathCache::new()));
+
         BorrowSync {
-            trie: self.trie,
+            root: self.root,
+            cache: Cell::new(cache),
             _marker: PhantomData
         }
     }
 
+    /// Retrieve a reference to the value at the given index. Updates the local path
+    /// cache to point at this index.
     pub fn get(&self, index: usize) -> Option<&'a T> {
-        self.trie().get(index)
+        let cache = unsafe { &mut *self.cache.get() };
+
+        if let Some((start_node, depth)) = cache.get_node(index) {
+            unsafe { &*start_node }.get(index, depth as usize, cache)
+        } else {
+            unsafe { &*self.root }.get(index, BRANCHING_DEPTH - 1, cache)
+        }
     }
 
+    /// Retrieve a mutable reference to the value at the given index. Updates the local path
+    /// cache to point at this index.
+    /// [Is this actually Sync-safe?]
     pub fn get_mut(&mut self, index: usize) -> Option<&'a mut T> {
-        self.trie_mut().get_mut(index)
+        let cache = unsafe { &mut *self.cache.get() };
+
+        if let Some((start_node, depth)) = cache.get_node_mut(index) {
+            unsafe { &mut *start_node }.get_mut(index, depth as usize, cache)
+        } else {
+            unsafe { &mut *self.root }.get_mut(index, BRANCHING_DEPTH - 1, cache)
+        }
     }
 }
 
 
-impl<'a, T: 'a> SubTrie<'a, T> {
-    fn new(depth: usize, node: *mut TrieNode<T>) -> SubTrie<'a, T> {
-        SubTrie {
-            depth: depth,
-            node: node,
-            _marker: PhantomData
-        }
+impl<'a, T> Drop for BorrowSync<'a, T> {
+    fn drop(&mut self) {
+        unsafe { Box::from_raw(self.cache.get()) };
     }
 }
 
@@ -1072,7 +997,7 @@ impl<'a, T: 'a> BorrowSplit<'a, T> {
         let mut depth = BRANCHING_DEPTH - 1;
 
         let mut buf = VecDeque::new();
-        buf.push_back(SubTrie::new(depth, root));
+        buf.push_back(SubTrie::new(0, depth, root));
 
         loop {
             if let Some(subtrie) = buf.pop_front() {
@@ -1082,7 +1007,7 @@ impl<'a, T: 'a> BorrowSplit<'a, T> {
                 if (subtrie.depth < depth && buf.len() >= n) ||
                     subtrie.depth == 1 {
 
-                    buf.push_back(subtrie);
+                    buf.push_front(subtrie);
                     break;
                 }
 
@@ -1091,7 +1016,8 @@ impl<'a, T: 'a> BorrowSplit<'a, T> {
                 // otherwise keep looking deeper
                 if let &mut TrieNode::Interior(ref mut int_vec) = unsafe { &mut *subtrie.node } {
                     for child in int_vec.iter_mut() {
-                        buf.push_back(SubTrie::new(subtrie.depth - 1, child.1));
+                        let index = subtrie.index | child.0 << (depth * BRANCHING_FACTOR_BITS);
+                        buf.push_back(SubTrie::new(index, subtrie.depth - 1, child.1));
                     }
                 } else {
                     panic!("Shouldn't have reached level 0!");
@@ -1111,18 +1037,20 @@ impl<'a, T: 'a> BorrowSplit<'a, T> {
 }
 
 
-unsafe impl<'a, T: 'a> Send for SubTrie<'a, T> {}
-
-
 impl<'a, T: 'a> SubTrie<'a, T> {
-    fn value(&mut self) -> &'a mut TrieNode<T> {
-        unsafe { &mut *self.node }
+    fn new(index: usize, depth: usize, node: *mut TrieNode<T>) -> SubTrie<'a, T> {
+        SubTrie {
+            index: index,
+            depth: depth,
+            node: node,
+            _marker: PhantomData
+        }
     }
 
     /// Retains only the elements specified by the predicate. Invalidates the cache entirely.
     pub fn retain_if<F>(&mut self, mut f: F)
         where F: FnMut(usize, &mut T) -> bool
     {
-        self.value().retain_if(0usize, self.depth, &mut f);
+        unsafe { &mut *self.node }.retain_if(self.index, self.depth, &mut f);
     }
 }

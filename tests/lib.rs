@@ -341,7 +341,9 @@ mod tests {
         let mut t: Trie<usize> = Trie::new();
 
         for i in 0..magic_number {
-            t.set(i * factor, 0);
+            let index = i * factor;
+            t.set(index, 0);
+            println!("set i={}", index);
         }
 
         // check number of chunks the trie got split into
@@ -355,10 +357,25 @@ mod tests {
             let mut guard = t.borrow_split(magic_number);
 
             for node in guard.iter_mut() {
-                node.retain_if(|_, _| false);
+                node.retain_if(|index, _| {
+
+                    // index must be one of the original set
+                    let mut valid = false;
+                    for i in 0..magic_number {
+                        if index == i * factor {
+                            valid = true;
+                        }
+                    }
+
+                    println!("get i={}", index);
+                    assert!(valid);
+
+                    false
+                });
             }
         }
 
+        // trie should be empty
         assert!(t.iter().count() == 0);
     }
 }
