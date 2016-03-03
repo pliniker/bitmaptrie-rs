@@ -41,6 +41,7 @@
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::collections::vec_deque::IterMut as VecDequeIterMut;
+use std::collections::vec_deque::Drain as VecDequeDrain;
 use std::marker::PhantomData;
 use std::mem::transmute;
 use std::ops::{Index, IndexMut};
@@ -1033,6 +1034,11 @@ impl<'a, T: 'a> BorrowSplit<'a, T> {
     /// Return an Iterator that provides `SubTrie` instances that can be independently mutated.
     pub fn iter_mut(&'a mut self) -> VecDequeIterMut<'a, SubTrie<'a, T>> {
         self.buffer.iter_mut()
+    }
+
+    /// Return a draining Iterator across the whole list of nodes.
+    pub fn drain(&'a mut self) -> VecDequeDrain<'a, SubTrie<'a, T>> {
+        self.buffer.drain(..)
     }
 }
 
