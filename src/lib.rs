@@ -1006,7 +1006,7 @@ impl<'a, T: 'a> BorrowSplit<'a, T> {
                 // nodes in the buffer, we're done.
                 // If we've hit depth 0, we're done.
                 if (subtrie.depth < depth && buf.len() >= n) ||
-                    subtrie.depth == 1 {
+                    subtrie.depth == 3 {
 
                     buf.push_front(subtrie);
                     break;
