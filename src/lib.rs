@@ -724,12 +724,12 @@ impl<T> Trie<T> {
 
     /// Create an iterator over immutable data
     pub fn iter(&self) -> Iter<T> {
-        Iter::new(&self.root, BRANCHING_DEPTH)
+        Iter::new(&self.root, BRANCHING_DEPTH, 0)
     }
 
     /// Create an iterator over mutable data
     pub fn iter_mut(&mut self) -> IterMut<T> {
-        IterMut::new(&mut self.root, BRANCHING_DEPTH)
+        IterMut::new(&mut self.root, BRANCHING_DEPTH, 0)
     }
 }
 
@@ -790,14 +790,14 @@ impl<T> IndexMut<usize> for Trie<T> {
 
 
 impl<'a, T> Iter<'a, T> {
-    pub fn new(root: &TrieNode<T>, escape_depth: usize) -> Iter<T> {
+    pub fn new(root: &TrieNode<T>, escape_depth: usize, base_index: usize) -> Iter<T> {
         Iter {
             nodes: [null_mut(); BRANCHING_DEPTH],
             points: [(VALID_MAX, 0); BRANCHING_DEPTH],
             depth: escape_depth - 1,
             escape_depth: escape_depth,
             current: root,
-            index: 0,
+            index: base_index,
         }
     }
 }
@@ -866,14 +866,14 @@ impl<'a, T> Iterator for Iter<'a, T> {
 
 
 impl<'a, T> IterMut<'a, T> {
-    pub fn new(root: &mut TrieNode<T>, escape_depth: usize) -> IterMut<T> {
+    pub fn new(root: &mut TrieNode<T>, escape_depth: usize, base_index: usize) -> IterMut<T> {
         IterMut {
             nodes: [null_mut(); BRANCHING_DEPTH],
             points: [(VALID_MAX, 0); BRANCHING_DEPTH],
             depth: escape_depth - 1,
             escape_depth: escape_depth,
             current: root,
-            index: 0,
+            index: base_index,
             _lifetime: PhantomData,
         }
     }
@@ -1063,11 +1063,11 @@ impl<'a, T: 'a> SubTrie<'a, T> {
 
     /// Return an iterator across this sub tree
     pub fn iter(&self) -> Iter<T> {
-        Iter::new(unsafe { &*self.node }, self.depth + 1)
+        Iter::new(unsafe { &*self.node }, self.depth + 1, self.index)
     }
 
     pub fn iter_mut(&mut self) -> IterMut<T> {
-        IterMut::new(unsafe { &mut *self.node}, self.depth + 1)
+        IterMut::new(unsafe { &mut *self.node}, self.depth + 1, self.index)
     }
 
     /// Retains only the elements specified by the predicate. Invalidates the cache entirely.
