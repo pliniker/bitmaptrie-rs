@@ -352,6 +352,44 @@ mod tests {
             assert!(guard.iter_mut().count() == magic_number);
         }
 
+        // check iterator
+        {
+            let mut guard = t.borrow_split(magic_number);
+
+            for node in guard.iter_mut() {
+                for (index, _) in node.iter() {
+                    // index must be one of the original set
+                    let mut valid = false;
+                    for i in 0..magic_number {
+                        if index == i * factor {
+                            valid = true;
+                        }
+                    }
+
+                    assert!(valid);
+                }
+            }
+        }
+
+        // check mut iterator
+        {
+            let mut guard = t.borrow_split(magic_number);
+
+            for node in guard.iter_mut() {
+                for (index, _) in node.iter_mut() {
+                    // index must be one of the original set
+                    let mut valid = false;
+                    for i in 0..magic_number {
+                        if index == i * factor {
+                            valid = true;
+                        }
+                    }
+
+                    assert!(valid);
+                }
+            }
+        }
+
         // remove all values concurrently
         {
             let mut guard = t.borrow_split(magic_number);

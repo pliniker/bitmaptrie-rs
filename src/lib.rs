@@ -133,6 +133,9 @@ pub struct Iter<'a, T: 'a> {
     depth: usize,
     current: &'a TrieNode<T>,
 
+    // depth at which the iterator is finished
+    escape_depth: usize,
+
     // current full index pieced together from all current nodes
     index: usize,
 }
@@ -148,6 +151,9 @@ pub struct IterMut<'a, T: 'a> {
     // current position in the current path
     depth: usize,
     current: *mut TrieNode<T>,
+
+    // depth at which the iterator is finished
+    escape_depth: usize,
 
     // current full index pieced together from all current nodes
     index: usize,
@@ -718,12 +724,12 @@ impl<T> Trie<T> {
 
     /// Create an iterator over immutable data
     pub fn iter(&self) -> Iter<T> {
-        Iter::new(&self.root)
+        Iter::new(&self.root, BRANCHING_DEPTH)
     }
 
     /// Create an iterator over mutable data
     pub fn iter_mut(&mut self) -> IterMut<T> {
-        IterMut::new(&mut self.root)
+        IterMut::new(&mut self.root, BRANCHING_DEPTH)
     }
 }
 
@@ -784,11 +790,12 @@ impl<T> IndexMut<usize> for Trie<T> {
 
 
 impl<'a, T> Iter<'a, T> {
-    pub fn new(root: &TrieNode<T>) -> Iter<T> {
+    pub fn new(root: &TrieNode<T>, escape_depth: usize) -> Iter<T> {
         Iter {
             nodes: [null_mut(); BRANCHING_DEPTH],
             points: [(VALID_MAX, 0); BRANCHING_DEPTH],
-            depth: BRANCHING_DEPTH - 1,
+            depth: escape_depth - 1,
+            escape_depth: escape_depth,
             current: root,
             index: 0,
         }
@@ -826,7 +833,7 @@ impl<'a, T> Iterator for Iter<'a, T> {
                         self.points[self.depth] = (VALID_MAX, 0usize);
 
                         self.depth += 1;
-                        if self.depth == BRANCHING_DEPTH {
+                        if self.depth == self.escape_depth {
                             return None;
                         }
 
@@ -859,11 +866,12 @@ impl<'a, T> Iterator for Iter<'a, T> {
 
 
 impl<'a, T> IterMut<'a, T> {
-    pub fn new(root: &mut TrieNode<T>) -> IterMut<T> {
+    pub fn new(root: &mut TrieNode<T>, escape_depth: usize) -> IterMut<T> {
         IterMut {
             nodes: [null_mut(); BRANCHING_DEPTH],
             points: [(VALID_MAX, 0); BRANCHING_DEPTH],
-            depth: BRANCHING_DEPTH - 1,
+            depth: escape_depth - 1,
+            escape_depth: escape_depth,
             current: root,
             index: 0,
             _lifetime: PhantomData,
@@ -901,7 +909,7 @@ impl<'a, T> Iterator for IterMut<'a, T> {
                         self.points[self.depth] = (VALID_MAX, 0usize);
 
                         self.depth += 1;
-                        if self.depth == BRANCHING_DEPTH {
+                        if self.depth == self.escape_depth {
                             return None;
                         }
 
@@ -1051,6 +1059,15 @@ impl<'a, T: 'a> SubTrie<'a, T> {
             node: node,
             _marker: PhantomData
         }
+    }
+
+    /// Return an iterator across this sub tree
+    pub fn iter(&self) -> Iter<T> {
+        Iter::new(unsafe { &*self.node }, self.depth + 1)
+    }
+
+    pub fn iter_mut(&mut self) -> IterMut<T> {
+        IterMut::new(unsafe { &mut *self.node}, self.depth + 1)
     }
 
     /// Retains only the elements specified by the predicate. Invalidates the cache entirely.
