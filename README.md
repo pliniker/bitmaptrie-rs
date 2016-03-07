@@ -3,6 +3,8 @@
 [![Build Status](https://travis-ci.org/pliniker/bitmaptrie-rs.svg?branch=master)](https://travis-ci.org/pliniker/bitmaptrie-rs)
 [![Latest Version](https://img.shields.io/crates/v/bitmaptrie.svg)](https://crates.io/crates/bitmaptrie)
 
+## [Documentation](https://crates.fyi/crates/bitmaptrie/)
+
 Requires Rust-nightly due to use of low-level unstable APIs.
 
 This is a non-persistent bitmapped vector trie with word-size indexing: thus
@@ -39,6 +41,10 @@ fn main() {
     }
 }
 ```
+
+### Author
+
+Peter Liniker
 
 ### License
 
