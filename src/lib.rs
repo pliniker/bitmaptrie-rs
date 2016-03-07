@@ -33,7 +33,6 @@
 #![feature(alloc)]
 #![feature(associated_consts)]
 #![feature(core_intrinsics)]
-#![feature(drop_in_place)]
 #![feature(heap_api)]
 #![feature(unique)]
 
