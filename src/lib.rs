@@ -1005,16 +1005,17 @@ impl<'a, T: 'a> BorrowSplit<'a, T> {
         // breadth-first search into trie to find at least n nodes
         let mut depth = BRANCHING_DEPTH - 1;
 
-        let mut buf = VecDeque::new();
+        let mut buf = VecDeque::with_capacity(WORD_SIZE);
         buf.push_back(SubTrie::new(0, depth, root));
 
         loop {
             if let Some(subtrie) = buf.pop_front() {
                 // If we've just switched to popping the next depth and there are sufficient
                 // nodes in the buffer, we're done.
-                // If we've hit depth 0, we're done.
+                // If we've hit depth 2, we're done because the unit of work per split isn't worth
+                // being smaller.
                 if (subtrie.depth < depth && buf.len() >= n) ||
-                    subtrie.depth == 3 {
+                    subtrie.depth == 2 {
 
                     buf.push_front(subtrie);
                     break;
