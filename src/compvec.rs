@@ -142,11 +142,13 @@ impl<T> CompVec<T> {
         self.data.valid() == 0
     }
 
-    /// Return the next Some(((masked_valid, compressed), (index, &value)))
-    /// or None
+    /// Function to build an iterator over immutable data.
+    ///
+    /// Return the next `Some(((masked_valid, compressed), (index, &value)))`
+    /// or `None`
     ///
     /// `masked_valid` is the last valid bitmap with already-visited indeces
-    /// masked out, starts with std::usize::MAX for the first call.
+    /// masked out, starts with `std::usize::MAX` for the first call.
     /// `compressed` is the last compressed vector index, always starting
     /// at zero for the first call.
     #[inline]
@@ -167,11 +169,13 @@ impl<T> CompVec<T> {
         }
     }
 
-    /// Return the next Some(((masked_valid, compressed), (index, &mut value)))
-    /// or None
+    /// Function to build an iterator over mutable data.
+    ///
+    /// Return the next `Some(((masked_valid, compressed), (index, &mut value)))`
+    /// or `None`
     ///
     /// `masked_valid` is the last valid bitmap with already-visited indeces
-    /// masked out, starts with std::usize::MAX for the first call.
+    /// masked out, starts with `std::usize::MAX` for the first call.
     /// `compressed` is the last compressed vector index, always starting
     /// at zero for the first call.
     #[inline]
@@ -201,6 +205,7 @@ impl<T> CompVec<T> {
         }
     }
 
+    /// Create an iterator over the contents as mutable values
     pub fn iter_mut(&mut self) -> IterMut<T> {
         IterMut {
             vec: self,
@@ -210,6 +215,7 @@ impl<T> CompVec<T> {
         }
     }
 
+    /// Instantiate a new, empty `CompVec<T>`
     pub fn new() -> CompVec<T> {
         CompVec { data: CompRawVec::new() }
     }

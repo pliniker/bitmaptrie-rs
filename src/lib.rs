@@ -49,7 +49,10 @@ use std::ptr::null_mut;
 mod comprawvec;
 mod compvec;
 
-pub use compvec::{CompVec, VALID_MAX};
+pub use compvec::{CompVec,
+                  Iter as CompVecIter,
+                  IterMut as CompVecIterMut,
+                  VALID_MAX};
 
 
 // need these to be consts so they can be plugged into array sizes
@@ -98,7 +101,7 @@ struct TrieNodePtr<T> {
 
 
 /// A cached path into a trie
-pub struct PathCache<T> {
+struct PathCache<T> {
     // last index accessed using this cache
     index_cache: Option<usize>,
 
@@ -107,12 +110,7 @@ pub struct PathCache<T> {
 }
 
 
-/// Path-cached bitmap trie.
-///
-/// Caveats for *_with_cache() functions:
-///  - no way to prevent a PathCache being used with the wrong MultiCacheTrie
-///    instance: safety fail
-///  - structure-modifying writes are more expensive due to cache invalidation
+/// Path-cached bitmap trie type. The key is always a `usize`.
 pub struct Trie<T> {
     root: TrieNode<T>,
 
@@ -121,7 +119,7 @@ pub struct Trie<T> {
 }
 
 
-/// Iterator over Trie
+/// Iterator over `(key, &T)`s of `Trie<T>`
 pub struct Iter<'a, T: 'a> {
     // current path down to the exterior node
     nodes: [*const TrieNode<T>; BRANCHING_DEPTH],
@@ -140,7 +138,7 @@ pub struct Iter<'a, T: 'a> {
 }
 
 
-/// Iterator over Trie
+/// Iterator over mutable `(key, &mut T)`s of `Trie<T>`
 pub struct IterMut<'a, T: 'a> {
     // current path down to the exterior node
     nodes: [*mut TrieNode<T>; BRANCHING_DEPTH],
@@ -207,13 +205,13 @@ unsafe impl<'a, T: 'a> Send for BorrowSplit<'a, T> {}
 unsafe impl<'a, T: 'a> Send for SubTrie<'a, T> {}
 
 
-// TrieNode is a recursive tree data structure where each node has up to 32 or 64 branches
-// depending on the system word size. The tree has a depth attribute which is counted inversely,
-// that is, zero is the leaves of the tree rather than the root.
-//
-// Each accessor method takes a PathCache<T> parameter. On access, the path cache is updated
-// with the path taken through the tree. In some cases, the cache is invalidated if a path
-// is or might have been destroyed or wasn't fully followed.
+/// TrieNode is a recursive tree data structure where each node has up to 32 or 64 branches
+/// depending on the system word size. The tree has a depth attribute which is counted inversely,
+/// that is, zero is the leaves of the tree rather than the root.
+///
+/// Each accessor method takes a PathCache<T> parameter. On access, the path cache is updated
+/// with the path taken through the tree. In some cases, the cache is invalidated if a path
+/// is or might have been destroyed or wasn't fully followed.
 impl<T> TrieNode<T> {
     fn new_branch() -> TrieNode<T> {
         TrieNode::Interior(CompVec::new())
@@ -401,7 +399,7 @@ impl<T> TrieNode<T> {
     }
 
     // Retains only the elements specified by the predicate.
-    pub fn retain_if<F>(&mut self, index: usize, depth: usize, f: &mut F) -> bool
+    fn retain_if<F>(&mut self, index: usize, depth: usize, f: &mut F) -> bool
         where F: FnMut(usize, &mut T) -> bool
     {
         // must be recursive in order to delete empty leaves and branches
@@ -1066,11 +1064,12 @@ impl<'a, T: 'a> SubTrie<'a, T> {
         Iter::new(unsafe { &*self.node }, self.depth + 1, self.index)
     }
 
+    /// Return an iterator across mutable values of this sub tree
     pub fn iter_mut(&mut self) -> IterMut<T> {
         IterMut::new(unsafe { &mut *self.node}, self.depth + 1, self.index)
     }
 
-    /// Retains only the elements specified by the predicate. Invalidates the cache entirely.
+    /// Retains only the elements specified by the predicate `f`.
     pub fn retain_if<F>(&mut self, mut f: F)
         where F: FnMut(usize, &mut T) -> bool
     {
