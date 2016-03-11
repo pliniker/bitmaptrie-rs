@@ -27,19 +27,37 @@
 //! use bitmaptrie::Trie;
 //!
 //! let mut t: Trie<String> = Trie::new();
+//!
+//! // set a key/value. Will overwrite any previous value at the index
 //! t.set(123, String::from("testing 123"));
 //!
+//! // look up a key returning a reference to the value if it exists
 //! if let Some(ref value) = t.get(123) {
 //!     println!("value = {}", *value);
 //! }
+//!
+//! // will remove the only entry
+//! t.retain_if(|key, _value| key != 123);
 //! ```
 //!
 //! # Thread Safety
 //!
 //! The trie can be borrowed in two ways:
-//!  * mutable sharding, where each shard can safely be accessed mutably in it's own thread,
-//!    allowing destructive updates
-//!  * a Sync-safe borrow that can itself be sharded, but prevents destructive updates
+//!  * For `T: Send`: mutable sharding, where each shard can safely be accessed mutably in it's
+//!    own thread, allowing destructive updates. This is analagous to `Vec::chunks()`.
+//!  * For `T: Send + Sync`: a Sync-safe borrow that can itself be sharded, but prevents
+//!    destructive updates. This is analagous to a borrow of `Vec<T: Send + Sync>`.
+//!
+//! Since the trie is borrowed and not shared using something like `Arc`, it follows that these
+//! methods will only work with scoped threading.
+//!
+//! Sharding works by doing a breadth-first search into the trie to find the depth at which there
+//! are at least the number of interior nodes as requested. The returned number of nodes may be
+//! much greater than the requested number, or may be less if the trie is small.
+//!
+//! As there is no knowledge of the balanced-ness of the trie, the more shards that are returned by
+//! `borrow_sharded()`, the more evenly the number of leaves on each shard will likely be
+//! distributed.
 //!
 //! ## Mutable Sharding
 //!
@@ -51,12 +69,15 @@
 //!
 //! let mut shards = t.borrow_sharded(4); // shard at least 4 ways if possible
 //! for mut shard in shards.drain() {
-//!     // launch a scoped thread here and move shard into it for processing
+//!     // launch a scoped thread or submit a task to a queue here and move shard into it for
+//!     // processing
+//!
+//!     // destructive update to the trie, only touching this one shard
 //!     shard.retain_if(|_, value| *value == String::from("testing 123"));
 //! }
 //! ```
 //!
-//! ## Sync-safe Borrow
+//! ## Sync-safe Borrow and Sharding
 //!
 //! `T` in `Trie<T>` must be Sync in order to make value changes.
 //!
@@ -73,7 +94,10 @@
 //!
 //! for shard in shards.iter() {
 //!     let shared = shared.clone();
-//!     // launch a scoped thread here and move shard and borrow into it for processing
+//!     // launch a scoped thread here or submit a task to a queue and move shard and borrow into
+//!     // it for processing
+//!
+//!     // iterate over the shard's key/values
 //!     for (_, value) in shard.iter() {
 //!         if let Some(other) = shared.get(*value) {
 //!             println!("found a cross reference");
@@ -84,7 +108,6 @@
 
 
 #![feature(alloc)]
-#![feature(associated_consts)]
 #![feature(core_intrinsics)]
 #![feature(heap_api)]
 #![feature(unique)]

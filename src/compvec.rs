@@ -10,7 +10,7 @@ use WORD_SIZE;
 
 
 /// First value to use in CompVec::next(masked__valid, ...)
-pub const VALID_MAX: usize = std::usize::MAX;
+pub const VALID_MAX: usize = !0;
 
 
 // A bitwise left-shift that returns zero if the shift would overflow
