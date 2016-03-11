@@ -1,12 +1,17 @@
+//! # Bitmappped Vector Trie
+//!
 //! A bitmapped vector trie with node compression and a path cache. Values are always sorted by
 //! their index; thus iterating is always in index order.
 //!
 //! The trie does not prescribe a length or capacity beside the range of values of it's index:
-//! usize. It could be used to compose a data structure that does behave like Vec.
+//! usize. It could be used to compose a data structure that does behave more like Vec.
 //!
 //! The branching factor is the word-size: 32 or 64. This makes the depth 6 for 32bit systems and
 //! 11 for 64bit systems. Because of the path cache, spatially dense indexes will not cause full
 //! depth traversal.
+//!
+//! There is support for sharding the Trie such that each shard might be passed to a different
+//! thread for processing.
 //!
 //! Performance improvements:
 //!
@@ -16,16 +21,64 @@
 //!
 //!  * with better use of generics, some code duplication might be avoided
 //!
-//! # Usage
+//! # Basic Usage
 //!
 //! ```
 //! use bitmaptrie::Trie;
 //!
 //! let mut t: Trie<String> = Trie::new();
-//! t.set(123, "testing 123".to_owned());
+//! t.set(123, String::from("testing 123"));
 //!
 //! if let Some(ref value) = t.get(123) {
 //!     println!("value = {}", *value);
+//! }
+//! ```
+//!
+//! # Thread Safety
+//!
+//! The trie can be borrowed in two ways:
+//!  * mutable sharding, where each shard can safely be accessed mutably in it's own thread,
+//!    allowing destructive updates
+//!  * a Sync-safe borrow that can itself be sharded, but prevents destructive updates
+//!
+//! ## Mutable Sharding
+//!
+//! ```
+//! use bitmaptrie::Trie;
+//!
+//! let mut t: Trie<String> = Trie::new();
+//! t.set(123, String::from("testing xyzzy"));
+//!
+//! let mut shards = t.borrow_sharded(4); // shard at least 4 ways if possible
+//! for mut shard in shards.drain() {
+//!     // launch a scoped thread here and move shard into it for processing
+//!     shard.retain_if(|_, value| *value == String::from("testing 123"));
+//! }
+//! ```
+//!
+//! ## Sync-safe Borrow
+//!
+//! `T` in `Trie<T>` must be Sync in order to make value changes.
+//!
+//! ```
+//! use bitmaptrie::Trie;
+//!
+//! let mut t: Trie<usize> = Trie::new();
+//! t.set(123, 246);
+//!
+//! let num_threads = 4;
+//!
+//! let shared = t.borrow_sync();
+//! let shards = shared.borrow_sharded(num_threads);
+//!
+//! for shard in shards.iter() {
+//!     let shared = shared.clone();
+//!     // launch a scoped thread here and move shard and borrow into it for processing
+//!     for (_, value) in shard.iter() {
+//!         if let Some(other) = shared.get(*value) {
+//!             println!("found a cross reference");
+//!         }
+//!     }
 //! }
 //! ```
 
@@ -39,7 +92,7 @@
 
 use std::cell::Cell;
 use std::collections::VecDeque;
-use std::collections::vec_deque::IterMut as VecDequeIterMut;
+use std::collections::vec_deque::Iter as VecDequeIter;
 use std::collections::vec_deque::Drain as VecDequeDrain;
 use std::marker::PhantomData;
 use std::mem::transmute;
@@ -160,13 +213,29 @@ pub struct IterMut<'a, T: 'a> {
 }
 
 
-/// Borrows a Trie mutably, exposing a Sync-safe subset of it's methods. No structure
+/// Borrows a Trie exposing a Sync-type-safe subset of it's methods. No structure
 /// modifying methods are included. Each borrow gets it's own path cache.
 /// The lifetime of this type is the lifetime of the mutable borrow.
 /// This can be used to parallelize structure-immutant changes.
-pub struct BorrowSync<'a, T: 'a> {
-    root: *mut TrieNode<T>,
+pub struct BorrowSync<'a, T: 'a + Send + Sync> {
+    root: *const TrieNode<T>,
     cache: Cell<*mut PathCache<T>>,
+    _marker: PhantomData<&'a T>,
+}
+
+
+/// Borrows a BorrowSync, splitting it into interior nodes each of which can be iterated over
+/// separately while still giving access to the full Trie.
+pub struct BorrowShardImmut<'a, T: 'a + Send + Sync> {
+    buffer: VecDeque<ShardImmut<'a, T>>,
+}
+
+
+/// Immutable borrow of an interior Trie node.
+pub struct ShardImmut<'a, T: 'a + Send + Sync> {
+    index: usize,
+    depth: usize,
+    node: *const TrieNode<T>,
     _marker: PhantomData<&'a T>,
 }
 
@@ -174,21 +243,14 @@ pub struct BorrowSync<'a, T: 'a> {
 /// Type that borrows a Trie mutably, giving an iterable type that returns interior nodes on
 /// which structure-mutating operations can be performed. This can be used to parallelize
 /// destructive operations.
-pub struct BorrowSplit<'a, T: 'a> {
-    buffer: VecDeque<SubTrie<'a, T>>,
-}
-
-
-/// Type that borrows a Trie mutably, giving an iterable type that returns interior nodes which
-/// can be iterated over, and global access to the whole Trie.
-pub struct BorrowSplitSync<'a, T: 'a> {
-    buffer: VecDeque<SubTrie<'a, T>>,  // TODO not SubTrie, something else
+pub struct BorrowShardMut<'a, T: 'a + Send> {
+    buffer: VecDeque<ShardMut<'a, T>>,
 }
 
 
 /// A type that references an interior Trie node. For splitting a Trie into sub-nodes, each of
 /// which can be passed to a different thread for mutable structural changes.
-pub struct SubTrie<'a, T: 'a> {
+pub struct ShardMut<'a, T: 'a + Send> {
     // higher bits that form the roots of this node
     index: usize,
     depth: usize,
@@ -203,13 +265,17 @@ unsafe impl<T: Send> Send for PathCache<T> {}
 unsafe impl<T: Send> Send for TrieNode<T> {}
 unsafe impl<T: Send> Send for Trie<T> {}
 
-unsafe impl<'a, T: Send> Send for Iter<'a, T> {}
-unsafe impl<'a, T: Send> Send for IterMut<'a, T> {}
+unsafe impl<'a, T: 'a + Send> Send for Iter<'a, T> {}
+unsafe impl<'a, T: 'a + Send> Send for IterMut<'a, T> {}
 
-unsafe impl<'a, T: Send + Sync> Send for BorrowSync<'a, T> {}
+unsafe impl<'a, T: 'a + Send + Sync> Send for BorrowSync<'a, T> {}
+unsafe impl<'a, T: 'a + Send + Sync> Sync for BorrowSync<'a, T> {}
 
-unsafe impl<'a, T: 'a> Send for BorrowSplit<'a, T> {}
-unsafe impl<'a, T: 'a> Send for SubTrie<'a, T> {}
+unsafe impl<'a, T: 'a + Send + Sync> Send for ShardImmut<'a, T> {}
+unsafe impl<'a, T: 'a + Send + Sync> Sync for ShardImmut<'a, T> {}
+
+unsafe impl<'a, T: 'a + Send> Send for BorrowShardMut<'a, T> {}
+unsafe impl<'a, T: 'a + Send> Send for ShardMut<'a, T> {}
 
 
 /// TrieNode is a recursive tree data structure where each node has up to 32 or 64 branches
@@ -739,20 +805,20 @@ impl<T> Trie<T> {
 
 
 impl<T: Send> Trie<T> {
-    /// Split the trie into at minimum `n` nodes (by doing a breadth-first search for the depth
+    /// Shard the trie into at minimum `n` nodes (by doing a breadth-first search for the depth
     /// with at least that many interior nodes) and return an guard type that provides an iterator
     /// to iterate over the nodes. There is no upper bound on the number of nodes returned and less
-    /// than n may be returned. The guard type, `BorrowSplit`, guards the lifetime of the mutable
+    /// than n may be returned. The guard type, `BorrowShard`, guards the lifetime of the mutable
     /// borrow, making this suitable for use in a scoped threading context. Invalidates the
     /// cache entirely.
-    pub fn borrow_split(&mut self, n: usize) -> BorrowSplit<T> {
+    pub fn borrow_sharded(&mut self, n: usize) -> BorrowShardMut<T> {
         unsafe { &mut *self.cache.get() }.invalidate_all();
-        BorrowSplit::new(&mut self.root, n)
+        BorrowShardMut::new(&mut self.root, n)
     }
 
-    /// Cleans up any empty nodes that may be left dangling. This is only useful in conjunction
-    /// with borrow_split() where sub-tries may be left empty but not deleted themselves and is
-    /// entirely optional.
+    /// Cleans up any empty interior nodes that may be left dangling. This is only useful in
+    /// conjunction with borrow_split() where sub-tries may be left empty but not deleted
+    /// themselves and is entirely optional.
     pub fn prune(&mut self) {
         self.retain_if(|_, _| true);
     }
@@ -764,8 +830,8 @@ impl<T: Send + Sync> Trie<T> {
     /// threads if `T` is Sync. Suitable only for a scoped thread as the lifetime of the
     /// `BorrowSync` instance is not `'static` but the same duration as the borrow. Each borrow
     /// contains it's own path cache.
-    pub fn borrow_sync(&mut self) -> BorrowSync<T> {
-        BorrowSync::new(&mut self.root)
+    pub fn borrow_sync(&self) -> BorrowSync<T> {
+        BorrowSync::new(&self.root)
     }
 }
 
@@ -946,24 +1012,12 @@ impl<'a, T> Iterator for IterMut<'a, T> {
 }
 
 
-impl<'a, T> BorrowSync<'a, T> {
-    fn new(root: &'a mut TrieNode<T>) -> BorrowSync<'a, T> {
+impl<'a, T: Send + Sync> BorrowSync<'a, T> {
+    fn new(root: &'a TrieNode<T>) -> BorrowSync<'a, T> {
         let cache = Box::into_raw(Box::new(PathCache::new()));
 
         BorrowSync {
             root: root,
-            cache: Cell::new(cache),
-            _marker: PhantomData
-        }
-    }
-
-    /// Clone this instance: the new instance can be sent to another thread. It has it's own
-    /// path cache.
-    pub fn clone(&self) -> BorrowSync<'a, T> {
-        let cache = Box::into_raw(Box::new(PathCache::new()));
-
-        BorrowSync {
-            root: self.root,
             cache: Cell::new(cache),
             _marker: PhantomData
         }
@@ -981,36 +1035,109 @@ impl<'a, T> BorrowSync<'a, T> {
         }
     }
 
-    /// Retrieve a mutable reference to the value at the given index. Updates the local path
-    /// cache to point at this index.
-    /// [Is this actually Sync-safe?]
-    pub fn get_mut(&mut self, index: usize) -> Option<&'a mut T> {
-        let cache = unsafe { &mut *self.cache.get() };
+    /// Return a type that can be iterated over to produce interior nodes that themselves can
+    /// be iterated over. This type is immutable.
+    pub fn borrow_sharded(&self, n: usize) -> BorrowShardImmut<'a, T> {
+        BorrowShardImmut::new(unsafe { &*self.root }, n)
+    }
+}
 
-        if let Some((start_node, depth)) = cache.get_node_mut(index) {
-            unsafe { &mut *start_node }.get_mut(index, depth as usize, cache)
-        } else {
-            unsafe { &mut *self.root }.get_mut(index, BRANCHING_DEPTH - 1, cache)
+
+impl<'a, T: Send + Sync> Clone for BorrowSync<'a, T> {
+    /// Clone this instance: the new instance can be sent to another thread. It has it's own
+    /// path cache.
+    fn clone(&self) -> BorrowSync<'a, T> {
+        let cache = Box::into_raw(Box::new(PathCache::new()));
+
+        BorrowSync {
+            root: self.root,
+            cache: Cell::new(cache),
+            _marker: PhantomData
         }
     }
 }
 
 
-impl<'a, T> Drop for BorrowSync<'a, T> {
+// clean up the path cache
+impl<'a, T: Send + Sync> Drop for BorrowSync<'a, T> {
     fn drop(&mut self) {
         unsafe { Box::from_raw(self.cache.get()) };
     }
 }
 
 
-impl<'a, T: 'a> BorrowSplit<'a, T> {
-    fn new(root: &'a mut TrieNode<T>, n: usize) -> BorrowSplit<'a, T> {
+impl<'a, T: 'a + Send + Sync> BorrowShardImmut<'a, T> {
+    fn new(root: &'a TrieNode<T>, n: usize) -> BorrowShardImmut<'a, T> {
+        // breadth-first search into trie to find at least n nodes
+        let mut depth = BRANCHING_DEPTH - 1;
+
+        let mut buf = VecDeque::with_capacity(WORD_SIZE);
+        buf.push_back(ShardImmut::new(0, depth, root));
+
+        loop {
+            if let Some(subtrie) = buf.pop_front() {
+                // If we've just switched to popping the next depth and there are sufficient
+                // nodes in the buffer, we're done.
+                // If we've hit depth 2, we're done because the unit of work per split isn't worth
+                // being smaller.
+                if (subtrie.depth < depth && buf.len() >= n) ||
+                    subtrie.depth == 2 {
+
+                    buf.push_front(subtrie);
+                    break;
+                }
+
+                depth = subtrie.depth;
+
+                // otherwise keep looking deeper
+                if let &TrieNode::Interior(ref int_vec) = unsafe { &*subtrie.node } {
+                    for child in int_vec.iter() {
+                        let index = subtrie.index | child.0 << (depth * BRANCHING_FACTOR_BITS);
+                        buf.push_back(ShardImmut::new(index, subtrie.depth - 1, child.1));
+                    }
+                } else {
+                    unreachable!();
+                }
+            }
+        }
+
+        BorrowShardImmut {
+            buffer: buf
+        }
+    }
+
+    /// Return an Iterator that provides `ShardMut` instances that can be independently mutated.
+    pub fn iter(&'a self) -> VecDequeIter<'a, ShardImmut<'a, T>> {
+        self.buffer.iter()
+    }
+}
+
+
+impl<'a, T: 'a + Send + Sync> ShardImmut<'a, T> {
+    fn new(index: usize, depth: usize, node: *const TrieNode<T>) -> ShardImmut<'a, T> {
+        ShardImmut {
+            index: index,
+            depth: depth,
+            node: node,
+            _marker: PhantomData
+        }
+    }
+
+    /// Return an iterator across this sub tree
+    pub fn iter(&self) -> Iter<T> {
+        Iter::new(unsafe { &*self.node }, self.depth + 1, self.index)
+    }
+}
+
+
+impl<'a, T: 'a + Send> BorrowShardMut<'a, T> {
+    fn new(root: &'a mut TrieNode<T>, n: usize) -> BorrowShardMut<'a, T> {
 
         // breadth-first search into trie to find at least n nodes
         let mut depth = BRANCHING_DEPTH - 1;
 
         let mut buf = VecDeque::with_capacity(WORD_SIZE);
-        buf.push_back(SubTrie::new(0, depth, root));
+        buf.push_back(ShardMut::new(0, depth, root));
 
         loop {
             if let Some(subtrie) = buf.pop_front() {
@@ -1031,34 +1158,29 @@ impl<'a, T: 'a> BorrowSplit<'a, T> {
                 if let &mut TrieNode::Interior(ref mut int_vec) = unsafe { &mut *subtrie.node } {
                     for child in int_vec.iter_mut() {
                         let index = subtrie.index | child.0 << (depth * BRANCHING_FACTOR_BITS);
-                        buf.push_back(SubTrie::new(index, subtrie.depth - 1, child.1));
+                        buf.push_back(ShardMut::new(index, subtrie.depth - 1, child.1));
                     }
                 } else {
-                    panic!("Shouldn't have reached level 0!");
+                    unreachable!();
                 }
             }
         }
 
-        BorrowSplit {
+        BorrowShardMut {
             buffer: buf
         }
     }
 
-    /// Return an Iterator that provides `SubTrie` instances that can be independently mutated.
-    pub fn iter_mut(&'a mut self) -> VecDequeIterMut<'a, SubTrie<'a, T>> {
-        self.buffer.iter_mut()
-    }
-
     /// Return a draining Iterator across the whole list of nodes.
-    pub fn drain(&'a mut self) -> VecDequeDrain<'a, SubTrie<'a, T>> {
+    pub fn drain(&'a mut self) -> VecDequeDrain<'a, ShardMut<'a, T>> {
         self.buffer.drain(..)
     }
 }
 
 
-impl<'a, T: 'a> SubTrie<'a, T> {
-    fn new(index: usize, depth: usize, node: *mut TrieNode<T>) -> SubTrie<'a, T> {
-        SubTrie {
+impl<'a, T: 'a + Send> ShardMut<'a, T> {
+    fn new(index: usize, depth: usize, node: *mut TrieNode<T>) -> ShardMut<'a, T> {
+        ShardMut {
             index: index,
             depth: depth,
             node: node,
@@ -1073,7 +1195,7 @@ impl<'a, T: 'a> SubTrie<'a, T> {
 
     /// Return an iterator across mutable values of this sub tree
     pub fn iter_mut(&mut self) -> IterMut<T> {
-        IterMut::new(unsafe { &mut *self.node}, self.depth + 1, self.index)
+        IterMut::new(unsafe { &mut *self.node }, self.depth + 1, self.index)
     }
 
     /// Retains only the elements specified by the predicate `f`.

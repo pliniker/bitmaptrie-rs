@@ -308,13 +308,13 @@ mod tests {
     #[test]
     fn test_trie_borrow_sync() {
         let mut t: Trie<usize> = Trie::new();
-        t.set(123, 0);
+        t.set(123, 42);
 
         {
-            let mut sync_1 = t.borrow_sync();
+            let sync_1 = t.borrow_sync();
 
-            if let Some(value) = sync_1.get_mut(123) {
-                *value += 1;
+            if let Some(value) = sync_1.get(123) {
+                assert!(*value == 42);
             }
 
             let sync_2 = sync_1.clone();
@@ -325,7 +325,7 @@ mod tests {
         }
 
         if let Some(value) = t.get(123) {
-            assert!(*value == 1);
+            assert!(*value == 42);
         } else {
             assert!(false);
         }
@@ -348,15 +348,15 @@ mod tests {
 
         // check number of chunks the trie got split into
         {
-            let mut guard = t.borrow_split(magic_number);
-            assert!(guard.iter_mut().count() == magic_number);
+            let mut guard = t.borrow_sharded(magic_number);
+            assert!(guard.drain().count() == magic_number);
         }
 
         // check iterator
         {
-            let mut guard = t.borrow_split(magic_number);
+            let mut guard = t.borrow_sharded(magic_number);
 
-            for node in guard.iter_mut() {
+            for node in guard.drain() {
                 for (index, _) in node.iter() {
                     // index must be one of the original set
                     let mut valid = false;
@@ -373,9 +373,9 @@ mod tests {
 
         // check mut iterator
         {
-            let mut guard = t.borrow_split(magic_number);
+            let mut guard = t.borrow_sharded(magic_number);
 
-            for node in guard.iter_mut() {
+            for mut node in guard.drain() {
                 for (index, _) in node.iter_mut() {
                     // index must be one of the original set
                     let mut valid = false;
@@ -392,9 +392,9 @@ mod tests {
 
         // remove all values concurrently
         {
-            let mut guard = t.borrow_split(magic_number);
+            let mut guard = t.borrow_sharded(magic_number);
 
-            for node in guard.iter_mut() {
+            for mut node in guard.drain() {
                 node.retain_if(|index, _| {
 
                     // index must be one of the original set
