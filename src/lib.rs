@@ -179,6 +179,13 @@ pub struct BorrowSplit<'a, T: 'a> {
 }
 
 
+/// Type that borrows a Trie mutably, giving an iterable type that returns interior nodes which
+/// can be iterated over, and global access to the whole Trie.
+pub struct BorrowSplitSync<'a, T: 'a> {
+    buffer: VecDeque<SubTrie<'a, T>>,  // TODO not SubTrie, something else
+}
+
+
 /// A type that references an interior Trie node. For splitting a Trie into sub-nodes, each of
 /// which can be passed to a different thread for mutable structural changes.
 pub struct SubTrie<'a, T: 'a> {
