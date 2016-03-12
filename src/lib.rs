@@ -1121,6 +1121,8 @@ impl<'a, T: 'a + Send + Sync> BorrowShardImmut<'a, T> {
                 } else {
                     unreachable!();
                 }
+            } else {
+                break;
             }
         }
 
@@ -1186,6 +1188,8 @@ impl<'a, T: 'a + Send> BorrowShardMut<'a, T> {
                 } else {
                     unreachable!();
                 }
+            } else {
+                break;
             }
         }
 

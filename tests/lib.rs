@@ -416,4 +416,14 @@ mod tests {
         // trie should be empty
         assert!(t.iter().count() == 0);
     }
+
+    #[test]
+    fn test_trie_borrow_split_empty() {
+        let mut t: Trie<usize> = Trie::new();
+
+        let mut guard = t.borrow_sharded(42);
+
+        // no entries, nothing to shard on
+        assert!(guard.drain().count() == 0);
+    }
 }
