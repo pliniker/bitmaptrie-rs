@@ -6,7 +6,6 @@
 //!
 
 #![feature(test)]
-#![feature(num_bits_bytes)]
 
 extern crate test;
 extern crate rand;
@@ -28,7 +27,7 @@ mod bench {
     // arbitrary benchmark parameters
     const BENCH_LENGTH: usize = 1 << 14;
 
-    const IS_64BIT: usize = std::usize::BYTES >> 3;
+    const IS_64BIT: usize = (std::usize::MAX / std::u32::MAX as usize) / std::u32::MAX as usize;
 
     // As the original purpose of this is to map memory addresses, the least
     // significant bits can be ignored due to alignment (2 bits on 32bit, 3
@@ -165,26 +164,6 @@ mod bench {
             }
         });
     }
-
-
-    #[bench]
-    fn bench_trie_multicache_crud(b: &mut Bencher) {
-        let seq = generate_pseudo_randoms(BENCH_LENGTH, DENSE_RANGE);
-
-        b.iter(|| {
-            let mut t: Trie<usize> = Trie::new();
-            let mut k = t.new_cache();
-
-            for i in &seq {
-                t.set_with_cache(&mut k, *i, *i as usize);
-                if let Some(ref mut v) = t.get_mut_with_cache(&mut k, *i) {
-                    **v = 0xABCDEF0 as usize;
-                }
-                t.remove_with_cache(&mut k, *i);
-            }
-        });
-    }
-
 
     #[bench]
     fn bench_hashmap_crud(b: &mut Bencher) {
