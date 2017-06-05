@@ -55,7 +55,7 @@ impl<T> CompRawVec<T> {
         let new_size = new_capacity * size_of::<T>();
 
         unsafe {
-            let array = reallocate(data.get_mut() as *mut T as *mut u8,
+            let array = reallocate(data.as_ptr() as *mut u8,
                                    old_size,
                                    new_size,
                                    align_of::<T>());
@@ -71,21 +71,21 @@ impl<T> CompRawVec<T> {
     fn deallocate(data: &mut Unique<T>, capacity: usize) {
         unsafe {
             let size = capacity * size_of::<T>();
-            deallocate(data.get_mut() as *mut T as *mut u8, size, align_of::<T>());
+            deallocate(data.as_ptr() as *mut u8, size, align_of::<T>());
         }
     }
 
     /// Access an object mutably in the array.
     /// Does not bounds-check index.
     pub unsafe fn get_mut(&mut self, index: usize) -> &mut T {
-        let p: *mut T = self.ptrs.offset(index as isize);
+        let p: *mut T = self.ptrs.as_ptr().offset(index as isize);
         &mut *p
     }
 
     /// Access an object in the array.
     /// Does not bounds-check index.
     pub unsafe fn get(&self, index: usize) -> &T {
-        let p: *const T = self.ptrs.offset(index as isize);
+        let p: *const T = self.ptrs.as_ptr().offset(index as isize);
         &*p
     }
 
@@ -108,7 +108,7 @@ impl<T> CompRawVec<T> {
         }
 
         // shift later objects and insert before them
-        let ptr: *mut T = self.ptrs.offset(index as isize);
+        let ptr: *mut T = self.ptrs.as_ptr().offset(index as isize);
 
         copy(ptr, ptr.offset(1), size - index);
         write(ptr, value);
@@ -135,7 +135,7 @@ impl<T> CompRawVec<T> {
 
         let value;
 
-        let ptr: *mut T = self.ptrs.offset(index as isize);
+        let ptr: *mut T = self.ptrs.as_ptr().offset(index as isize);
 
         value = read(ptr);
 
